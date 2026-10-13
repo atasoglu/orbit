@@ -95,7 +95,7 @@ fn render(ui: &MainWindow, st: &mut State) {
     let Some(cur) = st.current() else { return };
     let (px, _) = chart_px(ui);
     let half = px as f32 / 2.0;
-    let layout = Layout::new(cur, 1.5 / half);
+    let layout = Layout::new(cur, half - 2.0);
     let theme = if dark { ChartTheme::dark() } else { ChartTheme::light() };
     let hover = arc_of(&layout, st.hover);
     let focus = arc_of(&layout, st.selected);
@@ -182,7 +182,7 @@ fn find_path(from: &Node, target: *const Node, depth: usize) -> Option<Vec<usize
 fn hit<'a>(ui: &MainWindow, cur: &'a Node, x: f32, y: f32) -> Option<(Option<&'a Node>, usize)> {
     let (px, sf) = chart_px(ui);
     let half = px as f32 / 2.0;
-    let layout = Layout::new(cur, 1.5 / half);
+    let layout = Layout::new(cur, half - 2.0);
     let (dx, dy) = (x * sf - half, y * sf - half);
     layout.hit(dx, dy, half - 2.0).map(|a| (a.node, a.ring))
 }

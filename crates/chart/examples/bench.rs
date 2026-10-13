@@ -11,8 +11,7 @@ fn main() {
     let radius = size as f32 / 2.0;
 
     let t = Instant::now();
-    let min_angle = 1.5 / radius; // ~1.5 px at the inner edge scale
-    let layout = Layout::new(&r.root, min_angle);
+    let layout = Layout::new(&r.root, radius - 2.0);
     println!("layout: {:?}, {} arcs, {} rings", t.elapsed(), layout.arcs.len(), layout.rings_used());
 
     let mut pm = Pixmap::new(size, size).unwrap();

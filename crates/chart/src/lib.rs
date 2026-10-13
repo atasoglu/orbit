@@ -7,6 +7,9 @@ use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 pub const MAX_RINGS: usize = 5;
 
+/// Minimum arc length (px, at the ring's mid radius) for any drawn arc.
+const MIN_ARC_PX: f32 = 8.0;
+
 /// Extra pointer tolerance (px) around arcs when hit-testing.
 const HIT_SLACK_PX: f32 = 3.0;
 
@@ -47,8 +50,11 @@ pub struct Layout<'a> {
 }
 
 impl<'a> Layout<'a> {
-    /// `min_angle`: arcs narrower than this (radians) are merged away.
-    pub fn new(root: &'a Node, min_angle: f32) -> Self {
+    /// `radius`: chart radius in px. Every arc gets at least `MIN_ARC_PX` of
+    /// arc length at its ring's mid radius, so small items stay selectable;
+    /// items that cannot fit are merged into a grey "Other" arc. Widths are
+    /// therefore proportional only for items above that floor.
+    pub fn new(root: &'a Node, radius: f32) -> Self {
         let mut arcs = vec![Arc { node: Some(root), ring: 0, start: 0.0, end: TAU, hue: 0.0, parent: usize::MAX }];
         let mut frontier = vec![0usize];
         let mut ring_ranges = [(0, 0); MAX_RINGS + 1];
@@ -56,6 +62,8 @@ impl<'a> Layout<'a> {
         for ring in 1..=MAX_RINGS {
             let begin = arcs.len();
             let mut next = Vec::new();
+            let (r0, r1) = radii_for(ring, radius);
+            let min_w = MIN_ARC_PX / ((r0 + r1) / 2.0).max(1.0);
             for &pi in &frontier {
                 let p = arcs[pi];
                 let Some(pn) = p.node else { continue };
@@ -63,21 +71,41 @@ impl<'a> Layout<'a> {
                     continue;
                 }
                 let span = p.end - p.start;
+                let cap = ((span / min_w) as usize).max(1);
+
+                // Items: children by size, then one aggregated remainder.
+                let kids = &pn.children;
+                let sum_kids: u64 = kids.iter().map(|c| c.size).sum();
+                let mut keep = kids.len();
+                let mut other = pn.size.saturating_sub(sum_kids);
+                // A bare remainder (folded small files) only earns an arc when
+                // it is visibly wide; merged children always do.
+                let natural = span * other as f32 / pn.size as f32;
+                if natural < min_w * 0.5 {
+                    other = 0;
+                }
+                if keep + usize::from(other > 0) > cap {
+                    keep = cap.saturating_sub(1);
+                    other += kids[keep..].iter().map(|c| c.size).sum::<u64>();
+                }
+                let mut sizes: Vec<u64> = kids[..keep].iter().map(|c| c.size).collect();
+                if other > 0 {
+                    sizes.push(other);
+                }
+                let widths = fill_widths(&sizes, pn.size, span, min_w);
+
                 let mut a = p.start;
-                for (i, c) in pn.children.iter().enumerate() {
-                    let w = span * c.size as f32 / pn.size as f32;
-                    if w < min_angle {
-                        break; // children are sorted by size, the rest is smaller
-                    }
-                    let hue = if ring == 1 { (i as f32 * 0.618_034).fract() } else { p.hue };
-                    arcs.push(Arc { node: Some(c), ring, start: a, end: a + w, hue, parent: pi });
-                    if !c.children.is_empty() {
+                for (i, w) in widths.iter().enumerate() {
+                    let child = kids.get(i).filter(|_| i < keep);
+                    let hue = match child {
+                        Some(_) if ring == 1 => (i as f32 * 0.618_034).fract(),
+                        _ => p.hue,
+                    };
+                    arcs.push(Arc { node: child, ring, start: a, end: a + w, hue, parent: pi });
+                    if child.is_some_and(|c| !c.children.is_empty()) {
                         next.push(arcs.len() - 1);
                     }
                     a += w;
-                }
-                if p.end - a >= min_angle {
-                    arcs.push(Arc { node: None, ring, start: a, end: p.end, hue: p.hue, parent: pi });
                 }
             }
             ring_ranges[ring] = (begin, arcs.len());
@@ -98,13 +126,7 @@ impl<'a> Layout<'a> {
 
     /// Geometry for ring `r` inside a chart of `radius` pixels.
     fn radii(&self, r: usize, radius: f32) -> (f32, f32) {
-        let hub = radius * 0.22;
-        let ring_w = (radius - hub) / MAX_RINGS as f32;
-        if r == 0 {
-            (0.0, hub)
-        } else {
-            (hub + ring_w * (r - 1) as f32, hub + ring_w * r as f32)
-        }
+        radii_for(r, radius)
     }
 
     /// Centre of arc `i` as a pixel offset from the chart centre.
@@ -216,6 +238,43 @@ impl<'a> Layout<'a> {
                     pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
                 }
             }
+        }
+    }
+}
+
+fn radii_for(r: usize, radius: f32) -> (f32, f32) {
+    let hub = radius * 0.22;
+    let ring_w = (radius - hub) / MAX_RINGS as f32;
+    if r == 0 {
+        (0.0, hub)
+    } else {
+        (hub + ring_w * (r - 1) as f32, hub + ring_w * r as f32)
+    }
+}
+
+/// Split `span` proportionally to `sizes`, but never below `min_w` per item
+/// (water-filling: items under the floor are pinned, the rest share what is left).
+fn fill_widths(sizes: &[u64], total: u64, span: f32, min_w: f32) -> Vec<f32> {
+    let mut w: Vec<f32> = sizes.iter().map(|&s| span * s as f32 / total as f32).collect();
+    let mut pinned = vec![false; w.len()];
+    loop {
+        let n_pinned = pinned.iter().filter(|&&p| p).count();
+        let free: u64 = sizes.iter().zip(&pinned).filter(|(_, &p)| !p).map(|(&s, _)| s).sum();
+        let budget = span - min_w * n_pinned as f32;
+        let mut changed = false;
+        for i in 0..w.len() {
+            if pinned[i] {
+                w[i] = min_w;
+            } else {
+                w[i] = budget * sizes[i] as f32 / free.max(1) as f32;
+                if w[i] < min_w {
+                    pinned[i] = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return w;
         }
     }
 }
