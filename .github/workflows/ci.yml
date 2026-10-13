@@ -15,6 +15,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype-dev \
             libxkbcommon-dev libwayland-dev libx11-dev
+      # Release profile on purpose: tag builds restore this cache, so dependencies
+      # (Slint is the slow one) are compiled once.
+      - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --release --workspace
       - name: Test

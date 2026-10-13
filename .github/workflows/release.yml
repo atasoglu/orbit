@@ -3,6 +3,7 @@ name: Release
 # Push a tag like v0.1.0 to build the Linux packages and publish them.
 # Release notes come from the matching section of CHANGELOG.md, followed by a
 # "Full Changelog" link comparing this tag with the previous one.
+# Tests are not repeated here: tag the commit that already passed CI.
 on:
   push:
     tags: ["v*"]
@@ -35,8 +36,7 @@ jobs:
           sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype-dev \
             libxkbcommon-dev libwayland-dev libx11-dev
 
-      - name: Test
-        run: cargo test --release --workspace
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build .deb and tarball
         run: ./packaging/build-deb.sh
