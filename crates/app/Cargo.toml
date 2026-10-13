@@ -1,0 +1,22 @@
+[package]
+name = "diskutil-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "diskutil-gui"
+path = "src/main.rs"
+
+[dependencies]
+diskutil-core = { path = "../core" }
+diskutil-chart = { path = "../chart" }
+tiny-skia = "0.11"
+# CPU-only: winit window + software renderer, no GL/Vulkan, system fonts via fontdb.
+slint = { version = "1.18", default-features = false, features = [
+    "std", "backend-winit", "renderer-software", "software-renderer-systemfonts", "compat-1-2",
+] }
+
+[build-dependencies]
+slint-build = "1.18"

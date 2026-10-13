@@ -1,0 +1,178 @@
+import { Palette } from "std-widgets.slint";
+export { Palette, Theme }
+
+// Theme tokens. Auto = follow the system (Palette.color-scheme is the live value).
+global Theme {
+    in-out property <string> mode: "auto"; // "auto" | "light" | "dark"
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    out property <color> window-bg: dark ? #1c1c1e : #f5f5f7;
+    out property <color> sidebar-bg: dark ? #252528 : #ebebee;
+    out property <color> panel-bg: dark ? #2c2c2e : #ffffff;
+    out property <color> border: dark ? #3a3a3c : #d8d8dc;
+    out property <color> text: dark ? #f2f2f7 : #1d1d1f;
+    out property <color> text-dim: dark ? #98989f : #6e6e73;
+    out property <color> accent: #0a84ff;
+    out property <color> segment-bg: dark ? #3a3a3c : #dcdce0;
+}
+
+component Segment inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked;
+    height: 26px;
+    border-radius: 7px;
+    background: active ? Theme.panel-bg : transparent;
+    drop-shadow-blur: active ? 2px : 0px;
+    drop-shadow-color: #0000002a;
+    drop-shadow-offset-y: 1px;
+    Text { text: label; font-size: 12px; color: active ? Theme.text : Theme.text-dim; }
+    TouchArea { clicked => { root.clicked(); } }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    height: 32px;
+    border-radius: 7px;
+    background: active ? Theme.accent : transparent;
+    Text {
+        x: 12px;
+        text: label;
+        font-size: 13px;
+        color: active ? white : Theme.text;
+        vertical-alignment: center;
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "DiskUtil";
+    min-width: 760px;
+    min-height: 520px;
+    preferred-width: 1000px;
+    preferred-height: 680px;
+    background: Theme.window-bg;
+    default-font-family: "Inter";
+
+    in property <image> chart;
+    in property <string> status: "Scanning…";
+    in property <string> crumb: "/";
+    in property <string> sel-name: "";
+    in property <string> sel-size: "";
+    in property <string> sel-share: "";
+    in property <string> sel-files: "";
+    in property <string> total: "";
+    in property <string> theme-mode: "auto";
+    out property <length> chart-size: min(chart-area.width, chart-area.height);
+
+    callback hover(length, length);
+    callback clicked(length, length);
+    callback go-up();
+    callback set-theme(string);
+    callback chart-resized();
+
+    HorizontalLayout {
+        // Sidebar
+        Rectangle {
+            width: 210px;
+            background: Theme.sidebar-bg;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 4px;
+                Text { text: "DiskUtil"; font-size: 17px; font-weight: 700; color: Theme.text; }
+                Rectangle { height: 12px; }
+                NavItem { label: "Overview"; active: true; }
+                NavItem { label: "Cleanup"; }
+                NavItem { label: "Large files"; }
+                Rectangle { vertical-stretch: 1; }
+                Text { text: "Appearance"; font-size: 11px; color: Theme.text-dim; }
+                Rectangle {
+                    height: 30px;
+                    border-radius: 9px;
+                    background: Theme.segment-bg;
+                    HorizontalLayout {
+                        padding: 2px;
+                        spacing: 2px;
+                        Segment { label: "Auto"; active: root.theme-mode == "auto"; clicked => { root.set-theme("auto"); } }
+                        Segment { label: "Light"; active: root.theme-mode == "light"; clicked => { root.set-theme("light"); } }
+                        Segment { label: "Dark"; active: root.theme-mode == "dark"; clicked => { root.set-theme("dark"); } }
+                    }
+                }
+            }
+        }
+        Rectangle { width: 1px; background: Theme.border; }
+
+        // Main
+        VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+            HorizontalLayout {
+                spacing: 10px;
+                Text { text: "Overview"; font-size: 22px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: root.status; font-size: 12px; color: Theme.text-dim; vertical-alignment: center; }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                chart-area := Rectangle {
+                    horizontal-stretch: 1;
+                    min-width: 200px;
+                    min-height: 200px;
+                    preferred-width: 200px;
+                    preferred-height: 200px;
+                    background: Theme.panel-bg;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    changed width => { root.chart-resized(); }
+                    changed height => { root.chart-resized(); }
+                    Image {
+                        x: (chart-area.width - self.width) / 2;
+                        y: (chart-area.height - self.height) / 2;
+                        width: root.chart-size - 24px;
+                        height: root.chart-size - 24px;
+                        source: root.chart;
+                        image-fit: contain;
+                    }
+                    TouchArea {
+                        x: (chart-area.width - self.width) / 2;
+                        y: (chart-area.height - self.height) / 2;
+                        width: root.chart-size - 24px;
+                        height: root.chart-size - 24px;
+                        moved => { root.hover(self.mouse-x, self.mouse-y); }
+                        clicked => { root.clicked(self.mouse-x, self.mouse-y); }
+                    }
+                }
+                // Inspector
+                Rectangle {
+                    width: 230px;
+                    background: Theme.panel-bg;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 6px;
+                        alignment: start;
+                        Text { text: "PATH"; font-size: 10px; color: Theme.text-dim; }
+                        Text { text: root.crumb; font-size: 12px; color: Theme.text; wrap: word-wrap; }
+                        Rectangle { height: 8px; }
+                        Text { text: "SELECTION"; font-size: 10px; color: Theme.text-dim; }
+                        Text { text: root.sel-name; font-size: 15px; font-weight: 600; color: Theme.text; wrap: word-wrap; }
+                        Text { text: root.sel-size; font-size: 22px; font-weight: 700; color: Theme.accent; }
+                        Text { text: root.sel-share; font-size: 12px; color: Theme.text-dim; }
+                        Text { text: root.sel-files; font-size: 12px; color: Theme.text-dim; }
+                        Rectangle { height: 8px; }
+                        Rectangle {
+                            height: 30px;
+                            border-radius: 8px;
+                            background: Theme.segment-bg;
+                            Text { text: "↑  Up one level"; font-size: 12px; color: Theme.text; }
+                            TouchArea { clicked => { root.go-up(); } }
+                        }
+                        Text { text: root.total; font-size: 11px; color: Theme.text-dim; }
+                    }
+                }
+            }
+        }
+    }
+}
