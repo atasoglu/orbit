@@ -20,7 +20,7 @@ fn main() {
         let mut best = f64::MAX;
         for _ in 0..20 {
             let t = Instant::now();
-            layout.render(&mut pm, &theme, None);
+            layout.render(&mut pm, &theme, None, None);
             best = best.min(t.elapsed().as_secs_f64() * 1000.0);
         }
         println!("render {name} {size}x{size}: {best:.2} ms (best of 20)");

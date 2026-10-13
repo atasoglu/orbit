@@ -33,6 +33,8 @@ pub struct Arc<'a> {
     pub end: f32,
     /// Hue slot inherited from the top-level ancestor.
     pub hue: f32,
+    /// Index of the parent arc (`usize::MAX` for the root).
+    pub parent: usize,
 }
 
 pub struct Layout<'a> {
@@ -44,7 +46,7 @@ pub struct Layout<'a> {
 impl<'a> Layout<'a> {
     /// `min_angle`: arcs narrower than this (radians) are merged away.
     pub fn new(root: &'a Node, min_angle: f32) -> Self {
-        let mut arcs = vec![Arc { node: Some(root), ring: 0, start: 0.0, end: TAU, hue: 0.0 }];
+        let mut arcs = vec![Arc { node: Some(root), ring: 0, start: 0.0, end: TAU, hue: 0.0, parent: usize::MAX }];
         let mut frontier = vec![0usize];
         let mut ring_ranges = [(0, 0); MAX_RINGS + 1];
         ring_ranges[0] = (0, 1);
@@ -65,14 +67,14 @@ impl<'a> Layout<'a> {
                         break; // children are sorted by size, the rest is smaller
                     }
                     let hue = if ring == 1 { (i as f32 * 0.618_034).fract() } else { p.hue };
-                    arcs.push(Arc { node: Some(c), ring, start: a, end: a + w, hue });
+                    arcs.push(Arc { node: Some(c), ring, start: a, end: a + w, hue, parent: pi });
                     if !c.children.is_empty() {
                         next.push(arcs.len() - 1);
                     }
                     a += w;
                 }
                 if p.end - a >= min_angle {
-                    arcs.push(Arc { node: None, ring, start: a, end: p.end, hue: p.hue });
+                    arcs.push(Arc { node: None, ring, start: a, end: p.end, hue: p.hue, parent: pi });
                 }
             }
             ring_ranges[ring] = (begin, arcs.len());
@@ -102,6 +104,25 @@ impl<'a> Layout<'a> {
         }
     }
 
+    /// Centre of arc `i` as a pixel offset from the chart centre.
+    pub fn centroid(&self, i: usize, radius: f32) -> (f32, f32) {
+        let a = &self.arcs[i];
+        let (r0, r1) = self.radii(a.ring, radius);
+        let (rm, am) = ((r0 + r1) / 2.0, (a.start + a.end) / 2.0 - std::f32::consts::FRAC_PI_2);
+        (rm * am.cos(), rm * am.sin())
+    }
+
+    /// True when `anc` is `i` itself or one of its ancestors.
+    fn within(&self, mut i: usize, anc: usize) -> bool {
+        while i != usize::MAX {
+            if i == anc {
+                return true;
+            }
+            i = self.arcs[i].parent;
+        }
+        false
+    }
+
     /// Find the arc under pixel offset `(dx, dy)` from the chart centre.
     pub fn hit(&self, dx: f32, dy: f32, radius: f32) -> Option<&Arc<'a>> {
         let dist = (dx * dx + dy * dy).sqrt();
@@ -121,8 +142,9 @@ impl<'a> Layout<'a> {
         None
     }
 
-    /// Render into `pixmap` (premultiplied RGBA). `highlight` is an arc index.
-    pub fn render(&self, pixmap: &mut Pixmap, theme: &Theme, highlight: Option<usize>) {
+    /// Render into `pixmap` (premultiplied RGBA). `highlight` (hover) and `focus`
+    /// (selection) are arc indices; with a focus, unrelated arcs are faded.
+    pub fn render(&self, pixmap: &mut Pixmap, theme: &Theme, highlight: Option<usize>, focus: Option<usize>) {
         pixmap.fill(theme.background);
         let (w, h) = (pixmap.width() as f32, pixmap.height() as f32);
         let (cx, cy) = (w / 2.0, h / 2.0);
@@ -147,8 +169,15 @@ impl<'a> Layout<'a> {
                     (a.hue, 0.55, 0.60 + 0.05 * d)
                 }
             };
-            let boost = if highlight == Some(i) { 0.12 } else { 0.0 };
-            paint.set_color(hsl(hue, sat, (light + boost).min(0.9)));
+            let boost = if highlight == Some(i) { 0.10 } else { 0.0 };
+            let alpha = match focus {
+                None => 1.0,
+                Some(f) if self.within(i, f) || self.within(f, i) => 1.0,
+                Some(_) => 0.16,
+            };
+            let mut c = hsl(hue, sat, (light + boost).min(0.9));
+            c.set_alpha(alpha);
+            paint.set_color(c);
             pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
             if (a.end - a.start) * r1 > 3.0 {
                 pixmap.stroke_path(&path, &gap, &stroke, Transform::identity(), None);

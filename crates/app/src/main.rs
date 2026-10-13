@@ -26,7 +26,10 @@ struct State {
     root: Option<Rc<Node>>,
     /// Child indices from `root` down to the node shown in the chart.
     path: Vec<usize>,
-    highlight: Option<*const Node>,
+    /// Node under the pointer.
+    hover: Option<*const Node>,
+    /// Node the user clicked; everything unrelated is faded.
+    selected: Option<*const Node>,
     last_dark: bool,
 }
 
@@ -52,6 +55,12 @@ impl State {
         }
         s
     }
+
+    fn zoom_out(&mut self) {
+        self.path.pop();
+        self.selected = None;
+        self.hover = None;
+    }
 }
 
 fn human(b: u64) -> String {
@@ -71,27 +80,54 @@ fn chart_px(ui: &MainWindow) -> (u32, f32) {
     (((logical * sf) as u32).max(64), sf)
 }
 
+/// Look up an arc by node address; pointers are only compared, never dereferenced.
+fn arc_of(layout: &Layout, p: Option<*const Node>) -> Option<usize> {
+    let p = p?;
+    layout.arcs.iter().position(|a| a.node.is_some_and(|n| ptr::eq(n, p)))
+}
+
 fn render(ui: &MainWindow, st: &mut State) {
     let dark = ui.global::<Theme>().get_dark();
     st.last_dark = dark;
     let Some(cur) = st.current() else { return };
-    let (px, _) = chart_px(ui);
-    let radius = px as f32 / 2.0;
-    let layout = Layout::new(cur, 1.5 / radius);
+    let (px, sf) = chart_px(ui);
+    let half = px as f32 / 2.0;
+    let layout = Layout::new(cur, 1.5 / half);
     let theme = if dark { ChartTheme::dark() } else { ChartTheme::light() };
-    let hl = st
-        .highlight
-        .and_then(|p| layout.arcs.iter().position(|a| a.node.is_some_and(|n| ptr::eq(n, p))));
+    let hover = arc_of(&layout, st.hover);
+    let focus = arc_of(&layout, st.selected);
     let Some(mut pm) = Pixmap::new(px, px) else { return };
-    layout.render(&mut pm, &theme, hl);
+    layout.render(&mut pm, &theme, hover, focus);
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(px, px);
     buf.make_mut_bytes().copy_from_slice(pm.data());
     ui.set_chart(Image::from_rgba8_premultiplied(buf));
     ui.set_crumb(st.crumb().into());
+
+    // Leader-line anchor, in logical px relative to the chart panel.
+    match focus {
+        Some(i) => {
+            let (dx, dy) = layout.centroid(i, half - 2.0);
+            ui.set_anchor_x(ui.get_chart_w() / 2.0 + dx / sf);
+            ui.set_anchor_y(ui.get_chart_h() / 2.0 + dy / sf);
+            ui.set_anchor_visible(true);
+        }
+        None => ui.set_anchor_visible(false),
+    }
 }
 
-fn show_selection(ui: &MainWindow, st: &State, node: Option<&Node>) {
-    let (Some(cur), Some(n)) = (st.current(), node) else {
+/// Fill the inspector from the selection, or the hovered node when nothing is selected.
+fn refresh_info(ui: &MainWindow, st: &State) {
+    let Some(cur) = st.current() else { return };
+    let (p, title) = match (st.selected, st.hover) {
+        (Some(p), _) => (Some(p), "SELECTION"),
+        (None, h) => (h, "HOVER"),
+    };
+    ui.set_sel_title(title.into());
+    ui.set_has_selection(st.selected.is_some());
+    // Resolve the pointer back to a node by searching the current subtree.
+    let node = p.and_then(|p| find_node(cur, p, MAX_RINGS));
+    ui.set_can_zoom(st.selected.is_some() && node.is_some_and(|n| n.kind == NodeKind::Dir && !n.children.is_empty()));
+    let Some(n) = node else {
         ui.set_sel_name(SharedString::new());
         ui.set_sel_size(SharedString::new());
         ui.set_sel_share(SharedString::new());
@@ -101,12 +137,20 @@ fn show_selection(ui: &MainWindow, st: &State, node: Option<&Node>) {
     ui.set_sel_name(n.name.to_string().into());
     ui.set_sel_size(human(n.size).into());
     ui.set_sel_share(format!("{:.1}% of {}", n.size as f64 * 100.0 / cur.size.max(1) as f64, cur.name).into());
-    ui.set_sel_files(
-        if n.kind == NodeKind::Dir { format!("{} files", n.file_count) } else { "File".into() }.into(),
-    );
+    ui.set_sel_files(if n.kind == NodeKind::Dir { format!("{} files", n.file_count) } else { "File".into() }.into());
 }
 
-/// Find the child-index path from `from` to `target` (within `MAX_RINGS`).
+fn find_node(from: &Node, target: *const Node, depth: usize) -> Option<&Node> {
+    if ptr::eq(from, target) {
+        return Some(from);
+    }
+    if depth == 0 {
+        return None;
+    }
+    from.children.iter().find_map(|c| find_node(c, target, depth - 1))
+}
+
+/// Child-index path from `from` to `target` (within `MAX_RINGS`).
 fn find_path(from: &Node, target: *const Node, depth: usize) -> Option<Vec<usize>> {
     if depth == 0 {
         return None;
@@ -126,10 +170,19 @@ fn find_path(from: &Node, target: *const Node, depth: usize) -> Option<Vec<usize
 fn hit<'a>(ui: &MainWindow, cur: &'a Node, x: f32, y: f32) -> Option<(Option<&'a Node>, usize)> {
     let (px, sf) = chart_px(ui);
     let half = px as f32 / 2.0;
-    let radius = half - 2.0;
     let layout = Layout::new(cur, 1.5 / half);
     let (dx, dy) = (x * sf - half, y * sf - half);
-    layout.hit(dx, dy, radius).map(|a| (a.node, a.ring))
+    layout.hit(dx, dy, half - 2.0).map(|a| (a.node, a.ring))
+}
+
+/// Zoom the chart into `target` (a directory below the current root).
+fn zoom_into(st: &mut State, target: *const Node) {
+    let Some(cur) = st.current() else { return };
+    if let Some(p) = find_path(cur, target, MAX_RINGS) {
+        st.path.extend(p);
+        st.selected = None;
+        st.hover = None;
+    }
 }
 
 fn apply_theme(ui: &MainWindow, mode: &str) {
@@ -142,8 +195,14 @@ fn apply_theme(ui: &MainWindow, mode: &str) {
     ui.set_theme_mode(mode.into());
 }
 
-fn rerender(ui: &MainWindow) {
-    STATE.with(|s| render(ui, &mut s.borrow_mut()));
+/// Run `f` on the UI state, then refresh the inspector and redraw the chart.
+fn update(ui: &MainWindow, f: impl FnOnce(&mut State)) {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        f(&mut s);
+        refresh_info(ui, &s);
+        render(ui, &mut s);
+    });
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -171,11 +230,9 @@ fn main() -> Result<(), slint::PlatformError> {
                             .into(),
                     );
                     ui.set_total(format!("Total used: {}", human(r.root.size)).into());
-                    STATE.with(|s| {
-                        let mut s = s.borrow_mut();
+                    update(&ui, |s| {
                         s.root = Some(Rc::new(r.root));
                         s.path.clear();
-                        render(&ui, &mut s);
                     });
                 }
                 Err(e) => ui.set_status(format!("Scan failed: {e}").into()),
@@ -199,7 +256,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 .into(),
             );
         } else if STATE.with(|s| s.borrow().last_dark) != ui.global::<Theme>().get_dark() {
-            rerender(&ui);
+            update(&ui, |_| {});
         }
     });
 
@@ -207,7 +264,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let weak = ui.as_weak();
         move || {
             if let Some(ui) = weak.upgrade() {
-                rerender(&ui);
+                update(&ui, |_| {});
             }
         }
     });
@@ -216,18 +273,21 @@ fn main() -> Result<(), slint::PlatformError> {
         let weak = ui.as_weak();
         move |x, y| {
             let Some(ui) = weak.upgrade() else { return };
-            STATE.with(|s| {
-                let mut s = s.borrow_mut();
-                let Some(cur) = s.current() else { return };
-                let node = hit(&ui, cur, x, y).and_then(|(n, _)| n);
-                let ptr = node.map(|n| n as *const Node);
-                if ptr == s.highlight {
-                    return;
-                }
-                show_selection(&ui, &s, node);
-                s.highlight = ptr;
-                render(&ui, &mut s);
+            let changed = STATE.with(|s| {
+                let s = s.borrow();
+                let node = s.current().and_then(|cur| hit(&ui, cur, x, y)).and_then(|(n, _)| n);
+                node.map(|n| n as *const Node) != s.hover
             });
+            if changed {
+                update(&ui, |s| {
+                    let node = s
+                        .current()
+                        .and_then(|cur| hit(&ui, cur, x, y))
+                        .and_then(|(n, _)| n)
+                        .map(|n| n as *const Node);
+                    s.hover = node;
+                });
+            }
         }
     });
 
@@ -235,38 +295,60 @@ fn main() -> Result<(), slint::PlatformError> {
         let weak = ui.as_weak();
         move |x, y| {
             let Some(ui) = weak.upgrade() else { return };
-            STATE.with(|s| {
-                let mut s = s.borrow_mut();
-                let Some(cur) = s.current() else { return };
-                let target = match hit(&ui, cur, x, y) {
+            update(&ui, |s| {
+                let h = s.current().and_then(|cur| hit(&ui, cur, x, y)).map(|(n, r)| (n.map(|n| n as *const Node), r));
+                match h {
+                    // Centre disc: clear the selection first, otherwise go up a level.
                     Some((_, 0)) => {
-                        s.path.pop();
-                        s.highlight = None;
-                        render(&ui, &mut s);
-                        return;
+                        if s.selected.is_some() {
+                            s.selected = None;
+                        } else {
+                            s.zoom_out();
+                        }
                     }
-                    Some((Some(n), _)) if n.kind == NodeKind::Dir && !n.children.is_empty() => n as *const Node,
-                    _ => return,
-                };
-                if let Some(p) = find_path(cur, target, MAX_RINGS) {
-                    s.path.extend(p);
-                    s.highlight = None;
-                    render(&ui, &mut s);
+                    Some((Some(p), _)) => s.selected = Some(p),
+                    // Empty space or the aggregated "Other" arc.
+                    _ => s.selected = None,
                 }
             });
+        }
+    });
+
+    ui.on_double_clicked({
+        let weak = ui.as_weak();
+        move |x, y| {
+            let Some(ui) = weak.upgrade() else { return };
+            update(&ui, |s| {
+                let target = s.current().and_then(|cur| hit(&ui, cur, x, y)).and_then(|(n, r)| {
+                    n.filter(|n| r > 0 && n.kind == NodeKind::Dir && !n.children.is_empty())
+                        .map(|n| n as *const Node)
+                });
+                if let Some(t) = target {
+                    zoom_into(s, t);
+                }
+            });
+        }
+    });
+
+    ui.on_zoom_in({
+        let weak = ui.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                update(&ui, |s| {
+                    if let Some(t) = s.selected {
+                        zoom_into(s, t);
+                    }
+                });
+            }
         }
     });
 
     ui.on_go_up({
         let weak = ui.as_weak();
         move || {
-            let Some(ui) = weak.upgrade() else { return };
-            STATE.with(|s| {
-                let mut s = s.borrow_mut();
-                s.path.pop();
-                s.highlight = None;
-                render(&ui, &mut s);
-            });
+            if let Some(ui) = weak.upgrade() {
+                update(&ui, State::zoom_out);
+            }
         }
     });
 
@@ -275,7 +357,7 @@ fn main() -> Result<(), slint::PlatformError> {
         move |mode| {
             if let Some(ui) = weak.upgrade() {
                 apply_theme(&ui, &mode);
-                rerender(&ui);
+                update(&ui, |_| {});
             }
         }
     });

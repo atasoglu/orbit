@@ -6,7 +6,7 @@ license.workspace = true
 build = "build.rs"
 
 [[bin]]
-name = "diskutil-gui"
+name = "orbit"
 path = "src/main.rs"
 
 [dependencies]

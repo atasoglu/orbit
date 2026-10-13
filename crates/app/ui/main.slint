@@ -32,9 +32,11 @@ component Segment inherits Rectangle {
 component NavItem inherits Rectangle {
     in property <string> label;
     in property <bool> active;
+    callback clicked;
     height: 32px;
     border-radius: 7px;
-    background: active ? Theme.accent : transparent;
+    background: active ? Theme.accent : (ta.has-hover ? Theme.segment-bg : transparent);
+    ta := TouchArea { clicked => { root.clicked(); } }
     Text {
         x: 12px;
         text: label;
@@ -45,7 +47,7 @@ component NavItem inherits Rectangle {
 }
 
 export component MainWindow inherits Window {
-    title: "DiskUtil";
+    title: "Orbit";
     min-width: 760px;
     min-height: 520px;
     preferred-width: 1000px;
@@ -62,7 +64,18 @@ export component MainWindow inherits Window {
     in property <string> sel-files: "";
     in property <string> total: "";
     in property <string> theme-mode: "auto";
+    in-out property <string> page: "overview";
+    in property <bool> has-selection: false;
+    in property <bool> anchor-visible: false;
+    in property <length> anchor-x;
+    in property <length> anchor-y;
+    in property <string> sel-title: "HOVER";
+    in property <bool> can-zoom: false;
+    out property <length> chart-w: chart-area.width;
+    out property <length> chart-h: chart-area.height;
     out property <length> chart-size: min(chart-area.width, chart-area.height);
+    callback zoom-in();
+    callback double-clicked(length, length);
 
     callback hover(length, length);
     callback clicked(length, length);
@@ -78,11 +91,11 @@ export component MainWindow inherits Window {
             VerticalLayout {
                 padding: 16px;
                 spacing: 4px;
-                Text { text: "DiskUtil"; font-size: 17px; font-weight: 700; color: Theme.text; }
+                Text { text: "Orbit"; font-size: 17px; font-weight: 700; color: Theme.text; }
                 Rectangle { height: 12px; }
-                NavItem { label: "Overview"; active: true; }
-                NavItem { label: "Cleanup"; }
-                NavItem { label: "Large files"; }
+                NavItem { label: "Overview"; active: root.page == "overview"; clicked => { root.page = "overview"; } }
+                NavItem { label: "Cleanup"; active: root.page == "cleanup"; clicked => { root.page = "cleanup"; } }
+                NavItem { label: "Large files"; active: root.page == "large"; clicked => { root.page = "large"; } }
                 Rectangle { vertical-stretch: 1; }
                 Text { text: "Appearance"; font-size: 11px; color: Theme.text-dim; }
                 Rectangle {
@@ -107,11 +120,24 @@ export component MainWindow inherits Window {
             spacing: 12px;
             HorizontalLayout {
                 spacing: 10px;
-                Text { text: "Overview"; font-size: 22px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                Text { text: root.page == "overview" ? "Overview" : (root.page == "cleanup" ? "Cleanup" : "Large files"); font-size: 22px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
                 Rectangle { horizontal-stretch: 1; }
                 Text { text: root.status; font-size: 12px; color: Theme.text-dim; vertical-alignment: center; }
             }
-            HorizontalLayout {
+            Rectangle {
+                vertical-stretch: 1;
+                if root.page != "overview": Rectangle {
+                background: Theme.panel-bg;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: Theme.border;
+                Text { text: "Coming next"; font-size: 14px; color: Theme.text-dim; }
+            }
+            row := Rectangle {
+                width: parent.width;
+                height: parent.height;
+                visible: root.page == "overview";
+                HorizontalLayout {
                 spacing: 12px;
                 chart-area := Rectangle {
                     horizontal-stretch: 1;
@@ -140,6 +166,7 @@ export component MainWindow inherits Window {
                         height: root.chart-size - 24px;
                         moved => { root.hover(self.mouse-x, self.mouse-y); }
                         clicked => { root.clicked(self.mouse-x, self.mouse-y); }
+                        double-clicked => { root.double-clicked(self.mouse-x, self.mouse-y); }
                     }
                 }
                 // Inspector
@@ -156,12 +183,19 @@ export component MainWindow inherits Window {
                         Text { text: "PATH"; font-size: 10px; color: Theme.text-dim; }
                         Text { text: root.crumb; font-size: 12px; color: Theme.text; wrap: word-wrap; }
                         Rectangle { height: 8px; }
-                        Text { text: "SELECTION"; font-size: 10px; color: Theme.text-dim; }
+                        Text { text: root.sel-title; font-size: 10px; color: Theme.text-dim; }
                         Text { text: root.sel-name; font-size: 15px; font-weight: 600; color: Theme.text; wrap: word-wrap; }
                         Text { text: root.sel-size; font-size: 22px; font-weight: 700; color: Theme.accent; }
                         Text { text: root.sel-share; font-size: 12px; color: Theme.text-dim; }
                         Text { text: root.sel-files; font-size: 12px; color: Theme.text-dim; }
                         Rectangle { height: 8px; }
+                        if root.can-zoom: Rectangle {
+                            height: 30px;
+                            border-radius: 8px;
+                            background: Theme.accent;
+                            Text { text: "Zoom into folder"; font-size: 12px; color: white; }
+                            TouchArea { clicked => { root.zoom-in(); } }
+                        }
                         Rectangle {
                             height: 30px;
                             border-radius: 8px;
@@ -172,6 +206,37 @@ export component MainWindow inherits Window {
                         Text { text: root.total; font-size: 11px; color: Theme.text-dim; }
                     }
                 }
+                }
+                // Leader line from the selected arc to the inspector.
+                if root.anchor-visible: Path {
+                    width: row.width;
+                    height: row.height;
+                    viewbox-width: self.width / 1px;
+                    viewbox-height: self.height / 1px;
+                    stroke: Theme.accent;
+                    stroke-width: 1.5px;
+                    fill: transparent;
+                    commands: "M \{root.anchor-x / 1px} \{root.anchor-y / 1px} C \{(root.anchor-x / 1px + row.width / 1px - 242) / 2} \{root.anchor-y / 1px} \{(root.anchor-x / 1px + row.width / 1px - 242) / 2} 110 \{row.width / 1px - 244} 110";
+                }
+                if root.anchor-visible: Path {
+                    width: row.width;
+                    height: row.height;
+                    viewbox-width: self.width / 1px;
+                    viewbox-height: self.height / 1px;
+                    fill: Theme.accent;
+                    commands: "M \{row.width / 1px - 242} 110 L \{row.width / 1px - 252} 105 L \{row.width / 1px - 252} 115 Z";
+                }
+                if root.anchor-visible: Rectangle {
+                    x: root.anchor-x - 4px;
+                    y: root.anchor-y - 4px;
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: Theme.accent;
+                    border-width: 2px;
+                    border-color: white;
+                }
+            }
             }
         }
     }
