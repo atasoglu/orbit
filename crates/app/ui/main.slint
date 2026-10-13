@@ -111,12 +111,12 @@ component CleanupPage inherits Rectangle {
             for it[i] in root.items: Rectangle {
                 height: it.admin ? 96px : 62px;
                 border-radius: 8px;
-                background: ta.has-hover && !it.admin ? Theme.window-bg : transparent;
-                ta := TouchArea { enabled: !it.admin; clicked => { root.toggle(i); } }
+                background: ta.has-hover ? Theme.window-bg : transparent;
+                ta := TouchArea { clicked => { root.toggle(i); } }
                 HorizontalLayout {
                     padding: 10px;
                     spacing: 12px;
-                    if !it.admin: Rectangle {
+                    Rectangle {
                         width: 20px;
                         height: 20px;
                         y: 4px;
@@ -126,16 +126,12 @@ component CleanupPage inherits Rectangle {
                         border-color: Theme.text-dim;
                         Text { text: it.checked ? "✓" : ""; color: white; font-size: 13px; font-weight: 700; }
                     }
-                    if it.admin: Rectangle {
-                        width: 20px;
-                        Text { text: "🔒"; font-size: 13px; y: 4px; }
-                    }
                     VerticalLayout {
                         horizontal-stretch: 1;
                         spacing: 2px;
                         Text { text: it.title; font-size: 13px; font-weight: 600; color: Theme.text; overflow: elide; }
                         Text { text: it.desc; font-size: 11px; color: Theme.text-dim; overflow: elide; }
-                        if it.admin: Text { text: "Needs admin rights. Run in a terminal:"; font-size: 11px; color: Theme.text-dim; }
+                        if it.admin: Text { text: "Runs with admin rights (system password prompt):"; font-size: 11px; color: Theme.text-dim; }
                         if it.admin: TextInput {
                             text: it.command;
                             read-only: true;
@@ -149,6 +145,7 @@ component CleanupPage inherits Rectangle {
                         spacing: 4px;
                         Text { text: it.size; font-size: 13px; font-weight: 600; color: Theme.text; horizontal-alignment: right; }
                         Pill { label: it.risk; tint: root.risk-color(it.risk); }
+                        if it.admin: Pill { label: "admin"; tint: #5e5ce6; }
                     }
                 }
             }
@@ -179,7 +176,7 @@ component CleanupPage inherits Rectangle {
         TouchArea { }
         Rectangle {
             width: 340px;
-            height: 170px;
+            height: 190px;
             border-radius: 14px;
             background: Theme.panel-bg;
             border-width: 1px;
@@ -191,7 +188,7 @@ component CleanupPage inherits Rectangle {
                 spacing: 8px;
                 Text { text: root.mode == "delete" ? "Delete permanently?" : "Move to Trash?"; font-size: 16px; font-weight: 700; color: Theme.text; }
                 Text {
-                    text: root.mode == "delete" ? "\{root.selected} will be removed right away. This cannot be undone." : "\{root.selected} will be moved to the Trash. Space is freed once the Trash is emptied.";
+                    text: root.mode == "delete" ? "\{root.selected} will be removed right away. This cannot be undone. Admin items ask for your password." : "\{root.selected} will be moved to the Trash. Space is freed once the Trash is emptied. Admin items ask for your password and are removed for good.";
                     font-size: 12px;
                     color: Theme.text-dim;
                     wrap: word-wrap;

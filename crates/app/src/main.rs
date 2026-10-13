@@ -350,7 +350,7 @@ fn run_cleanup(ui: &MainWindow) {
             .items
             .iter()
             .zip(&c.checked)
-            .filter(|(i, &k)| k && matches!(i.method, Method::Files))
+            .filter(|(_, &k)| k)
             .map(|(i, _)| i.clone())
             .collect();
         c.busy = !picked.is_empty();
@@ -366,10 +366,18 @@ fn run_cleanup(ui: &MainWindow) {
     std::thread::spawn(move || {
         let home = home_dir();
         let (mut freed, mut errors) = (0u64, Vec::new());
-        for it in &picked {
+        for it in picked.iter().filter(|i| matches!(i.method, Method::Files)) {
             let out = cleanup::execute(&home, it, mode);
             freed += out.freed;
             errors.extend(out.errors);
+        }
+        // All admin tasks share one polkit password prompt.
+        let admin: Vec<&CleanupItem> = picked.iter().filter(|i| matches!(i.method, Method::Command(_))).collect();
+        if !admin.is_empty() {
+            match cleanup::run_admin(&admin) {
+                Ok(()) => freed += admin.iter().map(|i| i.size).sum::<u64>(),
+                Err(e) => errors.push(format!("admin tasks: {e}")),
+            }
         }
         let _ = slint::invoke_from_event_loop(move || {
             let Some(ui) = weak.upgrade() else { return };
@@ -576,7 +584,7 @@ fn main() -> Result<(), slint::PlatformError> {
             CLEAN.with(|c| {
                 let mut c = c.borrow_mut();
                 let flags: Vec<bool> =
-                    c.items.iter().map(|i| i.risk == Risk::Safe && matches!(i.method, Method::Files)).collect();
+                    c.items.iter().map(|i| i.risk == Risk::Safe).collect();
                 c.checked = flags;
             });
             refresh_clean(&ui, true);

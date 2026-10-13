@@ -28,7 +28,8 @@ pub enum Risk {
 pub enum Method {
     /// Paths the current user may remove directly.
     Files,
-    /// Needs admin rights: the command is shown to the user, never run by Orbit.
+    /// Needs admin rights. The command is fixed by the rule table (never user
+    /// input), shown to the user, and run through polkit by [`run_admin`].
     Command(String),
 }
 
@@ -303,6 +304,32 @@ fn old_kernels() -> (u64, Vec<PathBuf>) {
     (total, paths)
 }
 
+/// Strip `sudo`: [`run_admin`] already runs the script as root via polkit.
+pub fn admin_script(cmd: &str) -> String {
+    cmd.replace("sudo ", "")
+}
+
+/// Run the fixed admin commands of the given items in one `pkexec` call, so the
+/// user sees a single system password prompt. Only `Method::Command` items count.
+pub fn run_admin(items: &[&CleanupItem]) -> io::Result<()> {
+    let script: Vec<String> = items
+        .iter()
+        .filter_map(|i| match &i.method {
+            Method::Command(c) => Some(admin_script(c)),
+            Method::Files => None,
+        })
+        .collect();
+    if script.is_empty() {
+        return Ok(());
+    }
+    let status = Command::new("pkexec").args(["sh", "-c", &script.join(" ; ")]).status()?;
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(126) => Err(io::Error::new(io::ErrorKind::PermissionDenied, "authentication was cancelled or denied")),
+        _ => Err(io::Error::other(format!("admin command failed ({status})"))),
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Outcome {
     pub freed: u64,
@@ -313,7 +340,7 @@ pub struct Outcome {
 pub fn execute(home: &Path, item: &CleanupItem, mode: Mode) -> Outcome {
     let mut out = Outcome::default();
     if !matches!(item.method, Method::Files) {
-        out.errors.push("this item needs admin rights; run the shown command in a terminal".into());
+        out.errors.push("admin items are run with run_admin, not execute".into());
         return out;
     }
     for p in &item.paths {
@@ -471,6 +498,15 @@ mod tests {
         assert!(other.join("keep").exists());
         fs::remove_dir_all(home).unwrap();
         fs::remove_dir_all(other).unwrap();
+    }
+
+    #[test]
+    fn admin_script_drops_sudo() {
+        assert_eq!(admin_script("sudo apt clean"), "apt clean");
+        assert_eq!(
+            admin_script("snap list --all | while read n r; do sudo snap remove \"$n\"; done"),
+            "snap list --all | while read n r; do snap remove \"$n\"; done"
+        );
     }
 
     #[test]
