@@ -214,14 +214,57 @@ fn zoom_into(st: &mut State, target: *const Node) {
     }
 }
 
+/// GNOME's colour-scheme preference. Slint does not follow it live on Wayland,
+/// so Auto reads it here and watches for changes (see `watch_system_theme`).
+fn system_scheme() -> ColorScheme {
+    let out = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "color-scheme"]).output();
+    match out.map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase()) {
+        Ok(v) if v.contains("dark") => ColorScheme::Dark,
+        Ok(v) if v.contains("default") || v.contains("light") => ColorScheme::Light,
+        _ => ColorScheme::Unknown, // no gsettings: let the toolkit decide
+    }
+}
+
 fn apply_theme(ui: &MainWindow, mode: &str) {
     let scheme = match mode {
         "light" => ColorScheme::Light,
         "dark" => ColorScheme::Dark,
-        _ => ColorScheme::Unknown,
+        _ => system_scheme(),
     };
     ui.global::<Palette>().set_color_scheme(scheme);
     ui.set_theme_mode(mode.into());
+}
+
+/// Event-driven: `gsettings monitor` prints a line only when the preference changes.
+fn watch_system_theme(ui: &MainWindow) {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let Ok(mut child) = Command::new("gsettings")
+        .args(["monitor", "org.gnome.desktop.interface", "color-scheme"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    let Some(stdout) = child.stdout.take() else { return };
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        for _ in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let weak = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = weak.upgrade() else { return };
+                if ui.get_theme_mode() == "auto" {
+                    apply_theme(&ui, "auto");
+                    if std::env::var_os("ORBIT_DEBUG").is_some() {
+                        eprintln!("system theme changed: dark={}", ui.global::<Theme>().get_dark());
+                    }
+                    update(&ui, |_| {});
+                }
+            });
+        }
+        let _ = child.wait(); // gsettings exited (e.g. session ended)
+    });
 }
 
 /// Run `f` on the UI state, then refresh the inspector and redraw the chart.
@@ -287,27 +330,106 @@ fn home_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()))
 }
 
+thread_local! {
+    // Runs only while a scan is in flight; idle Orbit has no timers at all.
+    static PROGRESS_TIMER: Timer = Timer::default();
+}
+
+fn start_progress_timer(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    PROGRESS_TIMER.with(|t| {
+        t.start(TimerMode::Repeated, Duration::from_millis(250), move || {
+            let Some(ui) = weak.upgrade() else { return };
+            if let Some(p) = PROGRESS.with(|p| p.borrow().clone()) {
+                ui.set_status(
+                    format!("Scanning… {} files · {}", p.files.load(Ordering::Relaxed), human(p.bytes.load(Ordering::Relaxed)))
+                        .into(),
+                );
+            }
+        });
+    });
+}
+
+fn stop_progress_timer() {
+    PROGRESS_TIMER.with(|t| t.stop());
+}
+
+const ADMIN_HELPER: &str = "/usr/lib/orbit/orbit-scan-helper";
+
+/// The helper runs as root, so it is only offered when it (and its folder) is
+/// root-owned and not writable by anyone else — i.e. installed by the .deb.
+fn admin_helper_trusted() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let ok = |p: &Path| std::fs::metadata(p).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0);
+    let helper = Path::new(ADMIN_HELPER);
+    helper.is_file() && ok(helper) && helper.parent().is_some_and(ok)
+}
+
+/// Run the helper through pkexec and decode the tree it streams.
+fn scan_as_admin(progress: &Progress) -> std::io::Result<diskutil_core::ScanResult> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("pkexec")
+        .arg(ADMIN_HELPER)
+        .arg("/")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+    // Drain stderr on its own thread so neither pipe can fill up and stall the helper.
+    let prog = std::thread::scope(|sc| {
+        let reader = sc.spawn(|| {
+            for line in BufReader::new(stderr?).lines().map_while(Result::ok) {
+                let mut f = line.strip_prefix("P ")?.split_whitespace().filter_map(|x| x.parse::<u64>().ok());
+                if let (Some(files), Some(bytes)) = (f.next(), f.next()) {
+                    progress.files.store(files, Ordering::Relaxed);
+                    progress.bytes.store(bytes, Ordering::Relaxed);
+                }
+            }
+            Some(())
+        });
+        let res = diskutil_core::tree_io::read_result(&mut BufReader::with_capacity(1 << 20, stdout.ok_or_else(|| std::io::Error::other("no stdout"))?));
+        let _ = reader.join();
+        res
+    });
+    let status = child.wait()?;
+    match status.code() {
+        Some(126) | Some(127) => Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "authentication cancelled")),
+        _ => prog,
+    }
+}
+
 /// Scan `/` in the background; progress is read from shared counters by the UI timer.
-fn start_scan(ui: &MainWindow) {
+/// With `admin`, the root-owned helper does the scan (after a polkit prompt); if it
+/// is cancelled or fails, the previous tree stays on screen.
+fn start_scan(ui: &MainWindow, admin: bool) {
     let opts = ScanOptions::default();
     PROGRESS.with(|p| *p.borrow_mut() = Some(opts.progress.clone()));
     STATE.with(|s| s.borrow_mut().scanning = true);
+    ui.set_scanning(true);
+    start_progress_timer(ui);
     let started = Instant::now();
     let weak = ui.as_weak();
     std::thread::spawn(move || {
-        let res = scan(Path::new("/"), &opts);
+        let res = if admin { scan_as_admin(&opts.progress) } else { scan(Path::new("/"), &opts) };
         let _ = slint::invoke_from_event_loop(move || {
             let Some(ui) = weak.upgrade() else { return };
             STATE.with(|s| s.borrow_mut().scanning = false);
+            ui.set_scanning(false);
+            stop_progress_timer();
             match res {
                 Ok(r) => {
                     let skipped = if r.errors > 0 {
-                        format!(" · {} paths need elevated access", r.errors)
+                        format!(" · {} paths unreadable", r.errors)
                     } else {
                         String::new()
                     };
+                    let who = if admin { " · admin scan" } else { "" };
+                    ui.set_admin_scan(admin);
                     ui.set_status(
-                        format!("{} files · {:.1}s{skipped}", r.root.file_count, started.elapsed().as_secs_f32())
+                        format!("{} files · {:.1}s{who}{skipped}", r.root.file_count, started.elapsed().as_secs_f32())
                             .into(),
                     );
                     ui.set_total(format!("Total used: {}", human(r.root.size)).into());
@@ -321,7 +443,7 @@ fn start_scan(ui: &MainWindow) {
                     refresh_large(&root);
                     start_detect(&ui, root);
                 }
-                Err(e) => ui.set_status(format!("Scan failed: {e}").into()),
+                Err(e) => ui.set_status(format!("{} failed: {e}", if admin { "Admin scan" } else { "Scan" }).into()),
             }
         });
     });
@@ -447,7 +569,7 @@ fn run_cleanup(ui: &MainWindow) {
             let tail = if errors.is_empty() { String::new() } else { format!(" · {} items failed ({})", errors.len(), errors[0]) };
             ui.set_clean_msg(format!("{verb} {}{tail}", human(freed)).into());
             refresh_clean(&ui, false);
-            start_scan(&ui); // refresh chart and candidates
+            start_scan(&ui, false); // refresh chart and candidates
         });
     });
 }
@@ -458,29 +580,23 @@ fn main() -> Result<(), slint::PlatformError> {
     slint::set_xdg_app_id("orbit")?;
     let ui = MainWindow::new()?;
     apply_theme(&ui, "auto");
+    watch_system_theme(&ui);
 
     CLEAN_MODEL.with(|m| ui.set_clean_items(ModelRc::from(m.clone())));
     LARGE_MODEL.with(|m| ui.set_large_items(ModelRc::from(m.clone())));
-    start_scan(&ui);
+    ui.set_admin_available(admin_helper_trusted());
+    start_scan(&ui, false);
 
-    // Live progress while scanning, plus follow-the-system theme changes (Auto).
-    let tick = Timer::default();
-    let weak = ui.as_weak();
-    tick.start(TimerMode::Repeated, Duration::from_millis(250), move || {
-        let Some(ui) = weak.upgrade() else { return };
-        if STATE.with(|s| s.borrow().scanning) {
-            if let Some(p) = PROGRESS.with(|p| p.borrow().clone()) {
-                ui.set_status(
-                    format!(
-                        "Scanning… {} files · {}",
-                        p.files.load(Ordering::Relaxed),
-                        human(p.bytes.load(Ordering::Relaxed))
-                    )
-                    .into(),
-                );
+    // Auto theme: re-render when the effective colour scheme flips (no polling).
+    ui.on_theme_changed({
+        let weak = ui.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                if std::env::var_os("ORBIT_DEBUG").is_some() {
+                    eprintln!("theme changed: dark={}", ui.global::<Theme>().get_dark());
+                }
+                update(&ui, |_| {});
             }
-        } else if STATE.with(|s| s.borrow().last_dark) != ui.global::<Theme>().get_dark() {
-            update(&ui, |_| {});
         }
     });
 
@@ -691,9 +807,18 @@ fn main() -> Result<(), slint::PlatformError> {
                 LARGE.with(|l| {
                     l.borrow_mut().remove(i as usize);
                 });
-                start_scan(&ui); // refresh chart and totals (the list is rebuilt after the scan)
+                start_scan(&ui, false); // refresh chart and totals (the list is rebuilt after the scan)
             } else {
                 ui.set_large_msg(out.errors[0].clone().into());
+            }
+        }
+    });
+
+    ui.on_scan_admin({
+        let weak = ui.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                start_scan(&ui, true);
             }
         }
     });

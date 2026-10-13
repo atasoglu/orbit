@@ -305,6 +305,13 @@ export component MainWindow inherits Window {
     in property <bool> can-zoom: false;
     out property <length> chart-size: min(chart-area.width, chart-area.height);
     in property <[Item]> items;
+    in property <bool> admin-available: false;
+    in property <bool> admin-scan: false;
+    in property <bool> scanning: false;
+    out property <bool> is-dark: Theme.dark;
+    callback theme-changed();
+    changed is-dark => { root.theme-changed(); }
+    callback scan-admin();
     in property <[LargeItem]> large-items;
     in property <string> large-msg;
     callback large-show(int);
@@ -340,7 +347,17 @@ export component MainWindow inherits Window {
             VerticalLayout {
                 padding: 16px;
                 spacing: 4px;
-                Text { text: "Orbit"; font-size: 17px; font-weight: 700; color: Theme.text; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    height: 34px;
+                    Image {
+                        width: 34px;
+                        height: 34px;
+                        source: @image-url("../../../assets/icons/png/orbit-128.png");
+                        image-fit: contain;
+                    }
+                    Text { text: "Orbit"; font-size: 18px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                }
                 Rectangle { height: 12px; }
                 NavItem { label: "Overview"; active: root.page == "overview"; clicked => { root.page = "overview"; } }
                 NavItem { label: "Cleanup"; active: root.page == "cleanup"; clicked => { root.page = "cleanup"; } }
@@ -372,6 +389,7 @@ export component MainWindow inherits Window {
                 Text { text: root.page == "overview" ? "Overview" : (root.page == "cleanup" ? "Cleanup" : "Large files"); font-size: 22px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
                 Rectangle { horizontal-stretch: 1; }
                 Text { text: root.status; font-size: 12px; color: Theme.text-dim; vertical-alignment: center; }
+                if root.admin-available && !root.admin-scan && !root.scanning: Btn { label: "Scan as admin"; clicked => { root.scan-admin(); } }
             }
             Rectangle {
                 vertical-stretch: 1;
