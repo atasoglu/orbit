@@ -218,6 +218,9 @@ fn update(ui: &MainWindow, f: impl FnOnce(&mut State)) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // Wayland app-id: lets GNOME match the window to orbit.desktop and its icon.
+    slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select()?;
+    slint::set_xdg_app_id("orbit")?;
     let ui = MainWindow::new()?;
     apply_theme(&ui, "auto");
 

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Orbit
+GenericName=Disk Usage Analyzer
+Comment=See what is using your disk and find files that are safe to remove
+Exec=orbit
+Icon=orbit
+Terminal=false
+Categories=System;Utility;Filesystem;
+Keywords=disk;usage;space;cleanup;storage;
+StartupWMClass=orbit
