@@ -203,10 +203,18 @@ impl<'a> Layout<'a> {
             let a = &self.arcs[f];
             let (r0, r1) = self.radii(a.ring, radius);
             if let Some(path) = sector(cx, cy, r0, r1, a.start, a.end) {
-                let mut border = Paint { anti_alias: true, ..Paint::default() };
-                border.set_color(if theme.dark { Color::from_rgba8(255, 255, 255, 255) } else { Color::from_rgba8(10, 132, 255, 255) });
-                let stroke = Stroke { width: 3.0, ..Stroke::default() };
-                pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+                // Neutral two-tone outline (ink + halo): stays visible on every hue.
+                let (ink, halo) = if theme.dark {
+                    (Color::from_rgba8(255, 255, 255, 255), Color::from_rgba8(28, 28, 30, 255))
+                } else {
+                    (Color::from_rgba8(29, 29, 31, 255), Color::from_rgba8(255, 255, 255, 255))
+                };
+                for (color, width) in [(halo, 6.0), (ink, 3.0)] {
+                    let mut paint = Paint { anti_alias: true, ..Paint::default() };
+                    paint.set_color(color);
+                    let stroke = Stroke { width, ..Stroke::default() };
+                    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+                }
             }
         }
     }
