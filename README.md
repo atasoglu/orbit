@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/atasoglu/orbit/actions/workflows/ci.yml"><img src="https://github.com/atasoglu/orbit/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/atasoglu/orbit/releases"><img src="https://img.shields.io/github/v/release/atasoglu/orbit?include_prereleases" alt="Release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/atasoglu/orbit" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Rust-2021-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/UI-Slint-2379F4" alt="Slint">
   <img src="https://img.shields.io/badge/platform-Linux-informational?logo=linux&logoColor=white" alt="Linux">
