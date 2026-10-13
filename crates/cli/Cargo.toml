@@ -1,0 +1,12 @@
+[package]
+name = "diskutil-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "diskutil"
+path = "src/main.rs"
+
+[dependencies]
+diskutil-core = { path = "../core" }

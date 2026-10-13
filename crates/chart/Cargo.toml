@@ -1,0 +1,9 @@
+[package]
+name = "diskutil-chart"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+diskutil-core = { path = "../core" }
+tiny-skia = "0.11"
