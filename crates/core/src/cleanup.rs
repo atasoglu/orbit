@@ -236,7 +236,7 @@ fn system_items() -> Vec<CleanupItem> {
     };
 
     let apt = PathBuf::from("/var/cache/apt/archives");
-    push("apt-cache", "APT package cache", "Downloaded .deb files of installed updates.", Risk::Safe, path_size(&apt), vec![apt], "sudo apt clean");
+    push("apt-cache", "APT package cache", "Downloaded .deb files of installed updates.", Risk::Safe, path_size(&apt), vec![apt], "sudo apt-get clean");
 
     let journal = PathBuf::from("/var/log/journal");
     let js = path_size(&journal);
@@ -256,15 +256,15 @@ fn system_items() -> Vec<CleanupItem> {
         "snap list --all | awk '/disabled/{print $1, $3}' | while read n r; do sudo snap remove \"$n\" --revision=\"$r\"; done",
     );
 
-    let (k_size, k_paths) = old_kernels();
+    let (k_size, k_paths, k_versions) = old_kernels();
     push(
         "kernels-old",
         "Old Linux kernels",
-        "Kernels other than the one running now. Keep at least one fallback kernel.",
+        "Kernels older than the running one and its newest fallback; only their own packages are purged.",
         Risk::Careful,
         k_size,
         k_paths,
-        "sudo apt autoremove --purge",
+        &purge_kernels_command(&k_versions),
     );
     v
 }
@@ -285,23 +285,43 @@ fn old_snaps() -> (u64, Vec<PathBuf>) {
     (total, paths)
 }
 
-fn old_kernels() -> (u64, Vec<PathBuf>) {
+/// Compare dotted/dashed version strings numerically (`6.8.0-45` < `6.8.0-100`).
+fn version_key(v: &str) -> Vec<u64> {
+    v.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).map(|p| p.parse().unwrap_or(0)).collect()
+}
+
+/// Kernels that can go: everything except the running one and the newest other
+/// kernel (kept as a fallback). Returns (bytes, paths, versions).
+fn old_kernels() -> (u64, Vec<PathBuf>, Vec<String>) {
     let running = Command::new("uname").arg("-r").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let mut total = 0;
-    let mut paths = Vec::new();
-    let Ok(rd) = fs::read_dir("/boot") else { return (0, paths) };
-    for e in rd.flatten() {
-        let n = e.file_name().to_string_lossy().into_owned();
-        let Some(ver) = n.strip_prefix("vmlinuz-") else { continue };
-        if ver == running {
-            continue;
-        }
-        for p in [e.path(), PathBuf::from(format!("/boot/initrd.img-{ver}")), PathBuf::from(format!("/lib/modules/{ver}"))] {
+    let mut versions: Vec<String> = fs::read_dir("/boot")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().strip_prefix("vmlinuz-").map(str::to_owned))
+        .filter(|v| *v != running)
+        .collect();
+    versions.sort_by_key(|v| std::cmp::Reverse(version_key(v)));
+    // The newest remaining kernel stays as the fallback.
+    let removable: Vec<String> = versions.into_iter().skip(1).collect();
+    let (mut total, mut paths) = (0, Vec::new());
+    for ver in &removable {
+        for p in [PathBuf::from(format!("/boot/vmlinuz-{ver}")), PathBuf::from(format!("/boot/initrd.img-{ver}")), PathBuf::from(format!("/lib/modules/{ver}"))] {
             total += path_size(&p);
             paths.push(p);
         }
     }
-    (total, paths)
+    (total, paths, removable)
+}
+
+/// Purge exactly the packages of the given kernel versions (only those installed).
+/// Versions come from `/boot/vmlinuz-*` file names, so they are plain `[0-9a-z.-]`.
+fn purge_kernels_command(versions: &[String]) -> String {
+    let vers: Vec<&String> = versions.iter().filter(|v| v.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')).collect();
+    format!(
+        "sudo sh -c 'pkgs=\"\"; for v in {}; do for p in \"linux-image-$v\" \"linux-modules-$v\" \"linux-modules-extra-$v\" \"linux-headers-$v\"; do dpkg -s \"$p\" >/dev/null 2>&1 && pkgs=\"$pkgs $p\"; done; done; [ -n \"$pkgs\" ] && apt-get -y purge $pkgs'",
+        vers.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(" ")
+    )
 }
 
 /// Strip `sudo`: [`run_admin`] already runs the script as root via polkit.
@@ -310,24 +330,50 @@ pub fn admin_script(cmd: &str) -> String {
 }
 
 /// Run the fixed admin commands of the given items in one `pkexec` call, so the
-/// user sees a single system password prompt. Only `Method::Command` items count.
-pub fn run_admin(items: &[&CleanupItem]) -> io::Result<()> {
-    let script: Vec<String> = items
+/// user sees a single system password prompt. Every command runs in its own
+/// subshell and reports its exit code, so one failure cannot hide behind a later
+/// success. Returns `(item id, succeeded)` for each admin item.
+///
+/// `Err` means nothing ran: the prompt was dismissed (126) or authorisation failed (127).
+pub fn run_admin(items: &[&CleanupItem]) -> io::Result<Vec<(String, bool)>> {
+    use std::process::Stdio;
+    let admin: Vec<(&CleanupItem, &String)> = items
         .iter()
         .filter_map(|i| match &i.method {
-            Method::Command(c) => Some(admin_script(c)),
+            Method::Command(c) => Some((*i, c)),
             Method::Files => None,
         })
         .collect();
-    if script.is_empty() {
-        return Ok(());
+    if admin.is_empty() {
+        return Ok(Vec::new());
     }
-    let status = Command::new("pkexec").args(["sh", "-c", &script.join(" ; ")]).status()?;
-    match status.code() {
-        Some(0) => Ok(()),
-        Some(126) => Err(io::Error::new(io::ErrorKind::PermissionDenied, "authentication was cancelled or denied")),
-        _ => Err(io::Error::other(format!("admin command failed ({status})"))),
+    let mut script = String::new();
+    for (n, (_, cmd)) in admin.iter().enumerate() {
+        script.push_str(&format!("( {} ) </dev/null; echo \"ORBIT_RC {n} $?\"\n", admin_script(cmd)));
     }
+    let out = Command::new("pkexec").args(["sh", "-c", &script]).stdin(Stdio::null()).output()?;
+    match out.status.code() {
+        Some(126) | Some(127) => {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "authentication was cancelled or denied"))
+        }
+        _ => {}
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let codes: Vec<(usize, i32)> = text
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.strip_prefix("ORBIT_RC ")?.split_whitespace();
+            Some((f.next()?.parse().ok()?, f.next()?.parse().ok()?))
+        })
+        .collect();
+    if codes.is_empty() {
+        return Err(io::Error::other(format!("admin tasks did not run ({})", out.status)));
+    }
+    Ok(admin
+        .iter()
+        .enumerate()
+        .map(|(n, (item, _))| (item.id.clone(), codes.iter().any(|&(i, rc)| i == n && rc == 0)))
+        .collect())
 }
 
 #[derive(Debug, Default)]
@@ -507,6 +553,19 @@ mod tests {
             admin_script("snap list --all | while read n r; do sudo snap remove \"$n\"; done"),
             "snap list --all | while read n r; do snap remove \"$n\"; done"
         );
+    }
+
+    #[test]
+    fn kernel_versions_sort_numerically() {
+        let mut v = vec!["6.8.0-9-generic", "6.8.0-100-generic", "6.8.0-45-generic"];
+        v.sort_by_key(|x| std::cmp::Reverse(version_key(x)));
+        assert_eq!(v, ["6.8.0-100-generic", "6.8.0-45-generic", "6.8.0-9-generic"]);
+    }
+
+    #[test]
+    fn kernel_command_only_names_given_versions() {
+        let c = purge_kernels_command(&["6.8.0-45-generic".into(), "evil; rm -rf /".into()]);
+        assert!(c.contains("6.8.0-45-generic") && !c.contains("rm -rf"));
     }
 
     #[test]

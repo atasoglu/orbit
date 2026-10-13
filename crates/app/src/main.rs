@@ -427,7 +427,16 @@ fn run_cleanup(ui: &MainWindow) {
         let admin: Vec<&CleanupItem> = picked.iter().filter(|i| matches!(i.method, Method::Command(_))).collect();
         if !admin.is_empty() {
             match cleanup::run_admin(&admin) {
-                Ok(()) => freed += admin.iter().map(|i| i.size).sum::<u64>(),
+                Ok(results) => {
+                    for (id, ok) in results {
+                        let item = admin.iter().find(|i| i.id == id);
+                        if ok {
+                            freed += item.map_or(0, |i| i.size);
+                        } else {
+                            errors.push(format!("{} failed", item.map_or(id.as_str(), |i| i.title.as_str())));
+                        }
+                    }
+                }
                 Err(e) => errors.push(format!("admin tasks: {e}")),
             }
         }
