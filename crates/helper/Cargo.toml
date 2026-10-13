@@ -1,0 +1,9 @@
+[package]
+name = "orbit-scan-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+diskutil-core = { path = "../core" }
+libc = "0.2"

@@ -2917,6 +2917,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "orbit-scan-helper"
+version = "0.1.0"
+dependencies = [
+ "diskutil-core",
+ "libc",
+]
+
+[[package]]
 name = "ordered-float"
 version = "5.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
