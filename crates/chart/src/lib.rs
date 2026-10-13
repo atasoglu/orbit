@@ -3,7 +3,7 @@
 use std::f32::consts::TAU;
 
 use diskutil_core::Node;
-use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::{Color, FillRule, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 pub const MAX_RINGS: usize = 5;
 
@@ -193,18 +193,7 @@ impl<'a> Layout<'a> {
         for (i, a) in self.arcs.iter().enumerate() {
             let (r0, r1) = self.radii(a.ring, radius);
             let Some(path) = sector(cx, cy, r0, r1, a.start, a.end) else { continue };
-            let (hue, sat, light) = if a.node.is_none() {
-                (0.0, 0.0, if theme.dark { 0.38 } else { 0.80 })
-            } else if a.ring == 0 {
-                (0.0, 0.0, if theme.dark { 0.30 } else { 0.90 })
-            } else {
-                let d = a.ring as f32 - 1.0;
-                if theme.dark {
-                    (a.hue, 0.42, 0.40 + 0.045 * d)
-                } else {
-                    (a.hue, 0.55, 0.60 + 0.05 * d)
-                }
-            };
+            let (hue, sat, light) = base_color(a, theme);
             let boost = if highlight == Some(i) { 0.10 } else { 0.0 };
             let alpha = match focus {
                 None => 1.0,
@@ -220,24 +209,48 @@ impl<'a> Layout<'a> {
             }
         }
 
-        // Selection border, drawn last so neighbours never cover it.
+        // Selection: the arc lifts off the chart (slightly larger, brighter,
+        // soft shadow underneath, thin light rim) instead of getting an outline.
         if let Some(f) = focus {
             let a = &self.arcs[f];
             let (r0, r1) = self.radii(a.ring, radius);
-            if let Some(path) = sector(cx, cy, r0, r1, a.start, a.end) {
-                // Neutral two-tone outline (ink + halo): stays visible on every hue.
-                let (ink, halo) = if theme.dark {
-                    (Color::from_rgba8(255, 255, 255, 255), Color::from_rgba8(28, 28, 30, 255))
-                } else {
-                    (Color::from_rgba8(29, 29, 31, 255), Color::from_rgba8(255, 255, 255, 255))
-                };
-                for (color, width) in [(halo, 6.0), (ink, 3.0)] {
-                    let mut paint = Paint { anti_alias: true, ..Paint::default() };
-                    paint.set_color(color);
-                    let stroke = Stroke { width, ..Stroke::default() };
-                    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+            let pad = 2.0 / ((r0 + r1) / 2.0).max(1.0);
+            let (lo, hi) = ((r0 - 3.0).max(0.0), r1 + 6.0);
+            let (s, e) = ((a.start - pad).max(a.start - 0.05), (a.end + pad).min(a.end + 0.05));
+            if let Some(path) = sector(cx, cy, lo, hi, s, e) {
+                // Layered translucent strokes approximate a blurred drop shadow.
+                let shadow_a = if theme.dark { 0.10 } else { 0.07 };
+                for (width, k) in [(22.0, 0.35), (16.0, 0.5), (11.0, 0.7), (7.0, 0.9), (3.0, 1.0)] {
+                    let mut sp = Paint { anti_alias: true, ..Paint::default() };
+                    sp.set_color(Color::from_rgba(0.0, 0.0, 0.0, shadow_a * k).unwrap_or(Color::BLACK));
+                    let st = Stroke { width, line_join: LineJoin::Round, ..Stroke::default() };
+                    pixmap.stroke_path(&path, &sp, &st, Transform::from_translate(0.0, 3.0), None);
                 }
+                let (hue, sat, light) = base_color(a, theme);
+                let mut fp = Paint { anti_alias: true, ..Paint::default() };
+                fp.set_color(hsl(hue, (sat + 0.08).min(1.0), (light + 0.07).min(0.92)));
+                pixmap.fill_path(&path, &fp, FillRule::Winding, Transform::identity(), None);
+                let mut rim = Paint { anti_alias: true, ..Paint::default() };
+                rim.set_color(Color::from_rgba(1.0, 1.0, 1.0, 0.85).unwrap_or(Color::WHITE));
+                let st = Stroke { width: 1.5, line_join: LineJoin::Round, ..Stroke::default() };
+                pixmap.stroke_path(&path, &rim, &st, Transform::identity(), None);
             }
+        }
+    }
+}
+
+/// Base (hue, saturation, lightness) of an arc for the given theme.
+fn base_color(a: &Arc, theme: &Theme) -> (f32, f32, f32) {
+    if a.node.is_none() {
+        (0.0, 0.0, if theme.dark { 0.38 } else { 0.80 })
+    } else if a.ring == 0 {
+        (0.0, 0.0, if theme.dark { 0.30 } else { 0.90 })
+    } else {
+        let d = a.ring as f32 - 1.0;
+        if theme.dark {
+            (a.hue, 0.42, 0.40 + 0.045 * d)
+        } else {
+            (a.hue, 0.55, 0.60 + 0.05 * d)
         }
     }
 }

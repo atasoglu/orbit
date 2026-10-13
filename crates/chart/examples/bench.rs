@@ -26,6 +26,12 @@ fn main() {
         pm.save_png(format!("/tmp/claude-1000/-home-ahmet-workspaces-diskutil/b5d19efc-d73d-4497-a176-fdfe7745a198/scratchpad/sunburst-{name}.png")).unwrap();
     }
 
+    let focus = layout.arcs.iter().position(|a| a.ring == 2 && (a.end - a.start) > 0.25);
+    for (name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+        layout.render(&mut pm, &theme, None, focus);
+        pm.save_png(format!("/tmp/claude-1000/-home-ahmet-workspaces-diskutil/b5d19efc-d73d-4497-a176-fdfe7745a198/scratchpad/focus-{name}.png")).unwrap();
+    }
+
     let t = Instant::now();
     let mut hits = 0;
     for i in 0..100_000 {
@@ -37,3 +43,6 @@ fn main() {
     }
     println!("hit-test: {:.0} ns/call ({hits} hits)", t.elapsed().as_nanos() as f64 / 100_000.0);
 }
+
+#[allow(dead_code)]
+fn _unused() {}
