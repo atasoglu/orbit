@@ -1,0 +1,36 @@
+name: Release
+
+# Push a tag like v0.1.0 to build the Linux packages and publish them.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libfontconfig1-dev libfreetype-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev
+      - name: Test
+        run: cargo test --release --workspace
+      - name: Build .deb and tarball
+        run: ./packaging/build-deb.sh
+      - name: Check package ownership
+        run: |
+          # The root-run helper must be root-owned inside the package.
+          dpkg-deb -c dist/*.deb | grep 'usr/lib/orbit/orbit-scan-helper' | grep -q 'root/root'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orbit-linux
+          path: dist/*
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "Orbit $GITHUB_REF_NAME"

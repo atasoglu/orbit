@@ -354,6 +354,29 @@ fn stop_progress_timer() {
     PROGRESS_TIMER.with(|t| t.stop());
 }
 
+/// Dev helper for the README: select `/usr` (no personal paths), save the window
+/// as a PNG and quit. Triggered by `ORBIT_SCREENSHOT=<file>`.
+fn screenshot(ui: &MainWindow, root: &Node, out: PathBuf) {
+    update(ui, |s| s.selected = root.children.iter().find(|c| &*c.name == "usr").map(|c| c as *const Node));
+    let weak = ui.as_weak();
+    Timer::single_shot(Duration::from_millis(700), move || {
+        let snap = weak.upgrade().map(|ui| ui.window().take_snapshot());
+        match snap {
+            Some(Ok(buf)) => {
+                let size = tiny_skia::IntSize::from_wh(buf.width(), buf.height());
+                let pm = size.and_then(|sz| Pixmap::from_vec(buf.as_bytes().to_vec(), sz));
+                match pm.map(|p| p.save_png(&out)) {
+                    Some(Ok(())) => eprintln!("screenshot saved: {}", out.display()),
+                    _ => eprintln!("screenshot: could not encode PNG"),
+                }
+            }
+            Some(Err(e)) => eprintln!("screenshot failed: {e}"),
+            None => {}
+        }
+        let _ = slint::quit_event_loop();
+    });
+}
+
 const ADMIN_HELPER: &str = "/usr/lib/orbit/orbit-scan-helper";
 
 /// The helper runs as root, so it is only offered when it (and its folder) is
@@ -441,6 +464,9 @@ fn start_scan(ui: &MainWindow, admin: bool) {
                         s.hover = None;
                     });
                     refresh_large(&root);
+                    if let Some(out) = std::env::var_os("ORBIT_SCREENSHOT") {
+                        screenshot(&ui, &root, out.into());
+                    }
                     start_detect(&ui, root);
                 }
                 Err(e) => ui.set_status(format!("{} failed: {e}", if admin { "Admin scan" } else { "Scan" }).into()),
@@ -579,7 +605,7 @@ fn main() -> Result<(), slint::PlatformError> {
     slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select()?;
     slint::set_xdg_app_id("orbit")?;
     let ui = MainWindow::new()?;
-    apply_theme(&ui, "auto");
+    apply_theme(&ui, std::env::var("ORBIT_THEME").as_deref().unwrap_or("auto"));
     watch_system_theme(&ui);
 
     CLEAN_MODEL.with(|m| ui.set_clean_items(ModelRc::from(m.clone())));

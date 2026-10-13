@@ -347,17 +347,7 @@ export component MainWindow inherits Window {
             VerticalLayout {
                 padding: 16px;
                 spacing: 4px;
-                HorizontalLayout {
-                    spacing: 10px;
-                    height: 34px;
-                    Image {
-                        width: 34px;
-                        height: 34px;
-                        source: @image-url("../../../assets/icons/png/orbit-128.png");
-                        image-fit: contain;
-                    }
-                    Text { text: "Orbit"; font-size: 18px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
-                }
+                Text { text: "Orbit"; font-size: 17px; font-weight: 700; color: Theme.text; }
                 Rectangle { height: 12px; }
                 NavItem { label: "Overview"; active: root.page == "overview"; clicked => { root.page = "overview"; } }
                 NavItem { label: "Cleanup"; active: root.page == "cleanup"; clicked => { root.page = "cleanup"; } }
