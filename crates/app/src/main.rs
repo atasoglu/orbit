@@ -259,7 +259,7 @@ fn age(path: &Path) -> String {
 }
 
 /// Rebuild the "Large files" list from a finished scan.
-fn refresh_large(ui: &MainWindow, root: &Node) {
+fn refresh_large(root: &Node) {
     let mut files = Vec::new();
     collect_files(&mut PathBuf::from("/"), root, &mut files);
     files.sort_by(|a, b| b.1.cmp(&a.1));
@@ -314,7 +314,7 @@ fn start_scan(ui: &MainWindow) {
                         s.selected = None;
                         s.hover = None;
                     });
-                    refresh_large(&ui, &root);
+                    refresh_large(&root);
                     start_detect(&ui, root);
                 }
                 Err(e) => ui.set_status(format!("Scan failed: {e}").into()),
