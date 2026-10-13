@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use diskutil_core::cleanup::{detect, Method, Risk};
 use diskutil_core::{scan, Node, ScanOptions};
 
 fn human(b: u64) -> String {
@@ -24,7 +25,33 @@ fn print(n: &Node, depth: usize, max_depth: usize, total: u64) {
     }
 }
 
+/// `orbit-cli cleanup`: list reclaimable space (read-only; never deletes).
+fn cleanup() {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
+    let t = Instant::now();
+    let root = PathBuf::from("/");
+    let tree = scan(&root, &ScanOptions::default()).ok().map(|r| r.root);
+    let items = detect(&home, tree.as_ref().map(|t| (root.as_path(), t)));
+    let total: u64 = items.iter().map(|i| i.size).sum();
+    for i in &items {
+        let risk = match i.risk {
+            Risk::Safe => "safe",
+            Risk::Review => "review",
+            Risk::Careful => "careful",
+        };
+        let how = if matches!(i.method, Method::Command(_)) { " [admin]" } else { "" };
+        println!("{:>10}  {:<8} {}{how}", human(i.size), risk, i.title);
+        if let Method::Command(c) = &i.method {
+            println!("{:>10}  $ {c}", "");
+        }
+    }
+    eprintln!("\n{} items, {} reclaimable, {:.2}s", items.len(), human(total), t.elapsed().as_secs_f64());
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("cleanup") {
+        return cleanup();
+    }
     let mut args = std::env::args().skip(1);
     let path = PathBuf::from(args.next().unwrap_or_else(|| "/".into()));
     let depth = args.next().and_then(|d| d.parse().ok()).unwrap_or(2);

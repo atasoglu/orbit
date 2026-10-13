@@ -1,5 +1,6 @@
-//! Core library: filesystem scanner and (later) cleanup rule engine.
+//! Core library: filesystem scanner and cleanup rule engine.
 
+pub mod cleanup;
 pub mod scan;
 
 pub use scan::{real_mounts, scan, Node, NodeKind, Progress, ScanOptions, ScanResult};
