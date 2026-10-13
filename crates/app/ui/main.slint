@@ -1,6 +1,7 @@
 import { Palette, ListView } from "std-widgets.slint";
 
 export struct Item { name: string, size: string }
+export struct CleanItem { title: string, desc: string, size: string, risk: string, checked: bool, admin: bool, command: string }
 export { Palette, Theme }
 
 // Theme tokens. Auto = follow the system (Palette.color-scheme is the live value).
@@ -48,6 +49,165 @@ component NavItem inherits Rectangle {
     }
 }
 
+
+component Pill inherits Rectangle {
+    in property <string> label;
+    in property <color> tint;
+    height: 18px;
+    width: t.preferred-width + 14px;
+    border-radius: 9px;
+    background: tint.with-alpha(0.18);
+    t := Text { text: label; font-size: 10px; font-weight: 600; color: tint; }
+}
+
+component Btn inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 30px;
+    width: t.preferred-width + 28px;
+    border-radius: 8px;
+    opacity: enabled ? 1 : 0.4;
+    background: primary ? Theme.accent : Theme.segment-bg;
+    t := Text { text: label; font-size: 12px; color: primary ? white : Theme.text; }
+    TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+
+component CleanupPage inherits Rectangle {
+    in property <[CleanItem]> items;
+    in property <string> total;
+    in property <string> selected;
+    in property <int> count;
+    in property <string> mode;
+    in property <bool> busy;
+    in property <string> msg;
+    in-out property <bool> confirm-open: false;
+    callback toggle(int);
+    callback set-mode(string);
+    callback select-safe();
+    callback run();
+
+    background: Theme.panel-bg;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    function risk-color(r: string) -> color {
+        r == "safe" ? #30d158 : (r == "review" ? #ff9f0a : #ff453a)
+    }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: root.total; font-size: 15px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            Btn { label: "Select safe items"; clicked => { root.select-safe(); } }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for it[i] in root.items: Rectangle {
+                height: it.admin ? 96px : 62px;
+                border-radius: 8px;
+                background: ta.has-hover && !it.admin ? Theme.window-bg : transparent;
+                ta := TouchArea { enabled: !it.admin; clicked => { root.toggle(i); } }
+                HorizontalLayout {
+                    padding: 10px;
+                    spacing: 12px;
+                    if !it.admin: Rectangle {
+                        width: 20px;
+                        height: 20px;
+                        y: 4px;
+                        border-radius: 6px;
+                        background: it.checked ? Theme.accent : transparent;
+                        border-width: it.checked ? 0px : 1.5px;
+                        border-color: Theme.text-dim;
+                        Text { text: it.checked ? "✓" : ""; color: white; font-size: 13px; font-weight: 700; }
+                    }
+                    if it.admin: Rectangle {
+                        width: 20px;
+                        Text { text: "🔒"; font-size: 13px; y: 4px; }
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 2px;
+                        Text { text: it.title; font-size: 13px; font-weight: 600; color: Theme.text; overflow: elide; }
+                        Text { text: it.desc; font-size: 11px; color: Theme.text-dim; overflow: elide; }
+                        if it.admin: Text { text: "Needs admin rights. Run in a terminal:"; font-size: 11px; color: Theme.text-dim; }
+                        if it.admin: TextInput {
+                            text: it.command;
+                            read-only: true;
+                            font-size: 11px;
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 4px;
+                        Text { text: it.size; font-size: 13px; font-weight: 600; color: Theme.text; horizontal-alignment: right; }
+                        Pill { label: it.risk; tint: root.risk-color(it.risk); }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            Rectangle {
+                height: 30px;
+                width: 230px;
+                border-radius: 9px;
+                background: Theme.segment-bg;
+                HorizontalLayout {
+                    padding: 2px;
+                    spacing: 2px;
+                    Segment { label: "Move to Trash"; active: root.mode == "trash"; clicked => { root.set-mode("trash"); } }
+                    Segment { label: "Delete permanently"; active: root.mode == "delete"; clicked => { root.set-mode("delete"); } }
+                }
+            }
+            Text { text: root.msg; font-size: 12px; color: Theme.text-dim; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+            Text { text: root.selected; font-size: 12px; color: Theme.text-dim; vertical-alignment: center; }
+            Btn { label: root.busy ? "Cleaning…" : "Clean up"; primary: true; enabled: root.count > 0 && !root.busy; clicked => { root.confirm-open = true; } }
+        }
+    }
+
+    if root.confirm-open: Rectangle {
+        background: #00000066;
+        border-radius: 12px;
+        TouchArea { }
+        Rectangle {
+            width: 340px;
+            height: 170px;
+            border-radius: 14px;
+            background: Theme.panel-bg;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #00000066;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 8px;
+                Text { text: root.mode == "delete" ? "Delete permanently?" : "Move to Trash?"; font-size: 16px; font-weight: 700; color: Theme.text; }
+                Text {
+                    text: root.mode == "delete" ? "\{root.selected} will be removed right away. This cannot be undone." : "\{root.selected} will be moved to the Trash. Space is freed once the Trash is emptied.";
+                    font-size: 12px;
+                    color: Theme.text-dim;
+                    wrap: word-wrap;
+                }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    Btn { label: "Cancel"; clicked => { root.confirm-open = false; } }
+                    Btn { label: root.mode == "delete" ? "Delete" : "Move to Trash"; primary: true; clicked => { root.confirm-open = false; root.run(); } }
+                }
+            }
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Orbit";
     icon: @image-url("../../../assets/icons/png/orbit-256.png");
@@ -73,6 +233,17 @@ export component MainWindow inherits Window {
     in property <bool> can-zoom: false;
     out property <length> chart-size: min(chart-area.width, chart-area.height);
     in property <[Item]> items;
+    in property <[CleanItem]> clean-items;
+    in property <string> clean-total: "Analysing…";
+    in property <string> clean-selected;
+    in property <int> clean-count;
+    in property <string> clean-mode: "trash";
+    in property <bool> clean-busy;
+    in property <string> clean-msg;
+    callback clean-toggle(int);
+    callback clean-set-mode(string);
+    callback clean-select-safe();
+    callback clean-run();
     callback item-clicked(int);
     callback item-hovered(int);
     callback go-root();
@@ -128,12 +299,27 @@ export component MainWindow inherits Window {
             }
             Rectangle {
                 vertical-stretch: 1;
-                if root.page != "overview": Rectangle {
+                if root.page == "large": Rectangle {
                 background: Theme.panel-bg;
                 border-radius: 12px;
                 border-width: 1px;
                 border-color: Theme.border;
                 Text { text: "Coming next"; font-size: 14px; color: Theme.text-dim; }
+            }
+            if root.page == "cleanup": CleanupPage {
+                width: parent.width;
+                height: parent.height;
+                items: root.clean-items;
+                total: root.clean-total;
+                selected: root.clean-selected;
+                count: root.clean-count;
+                mode: root.clean-mode;
+                busy: root.clean-busy;
+                msg: root.clean-msg;
+                toggle(i) => { root.clean-toggle(i); }
+                set-mode(m) => { root.clean-set-mode(m); }
+                select-safe => { root.clean-select-safe(); }
+                run => { root.clean-run(); }
             }
             row := Rectangle {
                 width: parent.width;

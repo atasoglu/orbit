@@ -1,19 +1,33 @@
 use std::cell::RefCell;
 use std::path::Path;
 use std::ptr;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use diskutil_chart::{Layout, Theme as ChartTheme, MAX_RINGS};
-use diskutil_core::{scan, Node, NodeKind, ScanOptions};
+use diskutil_core::cleanup::{self, CleanupItem, Method, Mode, Risk};
+use diskutil_core::{scan, Node, NodeKind, Progress, ScanOptions};
 use slint::language::ColorScheme;
-use slint::{ComponentHandle, ModelRc, VecModel, Image, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode};
+use slint::{ComponentHandle, Model, ModelRc, VecModel, Image, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode};
 use tiny_skia::Pixmap;
 
 slint::include_modules!();
 
+#[derive(Default)]
+struct Clean {
+    items: Vec<CleanupItem>,
+    checked: Vec<bool>,
+    delete: bool,
+    busy: bool,
+}
+
 thread_local! {
+    static CLEAN: RefCell<Clean> = RefCell::new(Clean::default());
+    static CLEAN_MODEL: Rc<VecModel<CleanItem>> = Rc::new(VecModel::default());
+    static PROGRESS: RefCell<Option<Arc<Progress>>> = const { RefCell::new(None) };
     // Row -> node map for the inspector list (kept apart from STATE so row
     // callbacks can read it while STATE is mutably borrowed).
     static LIST: RefCell<Vec<*const Node>> = const { RefCell::new(Vec::new()) };
@@ -26,7 +40,8 @@ const CHART_PAD: f32 = 24.0;
 
 #[derive(Default)]
 struct State {
-    root: Option<Rc<Node>>,
+    root: Option<Arc<Node>>,
+    scanning: bool,
     /// Child indices from `root` down to the node shown in the chart.
     path: Vec<usize>,
     /// Node under the pointer.
@@ -217,22 +232,22 @@ fn update(ui: &MainWindow, f: impl FnOnce(&mut State)) {
     });
 }
 
-fn main() -> Result<(), slint::PlatformError> {
-    // Wayland app-id: lets GNOME match the window to orbit.desktop and its icon.
-    slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select()?;
-    slint::set_xdg_app_id("orbit")?;
-    let ui = MainWindow::new()?;
-    apply_theme(&ui, "auto");
+fn home_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()))
+}
 
-    // Scan "/" in the background; poll shared counters for live progress.
+/// Scan `/` in the background; progress is read from shared counters by the UI timer.
+fn start_scan(ui: &MainWindow) {
     let opts = ScanOptions::default();
-    let progress = opts.progress.clone();
+    PROGRESS.with(|p| *p.borrow_mut() = Some(opts.progress.clone()));
+    STATE.with(|s| s.borrow_mut().scanning = true);
     let started = Instant::now();
     let weak = ui.as_weak();
     std::thread::spawn(move || {
         let res = scan(Path::new("/"), &opts);
         let _ = slint::invoke_from_event_loop(move || {
             let Some(ui) = weak.upgrade() else { return };
+            STATE.with(|s| s.borrow_mut().scanning = false);
             match res {
                 Ok(r) => {
                     let skipped = if r.errors > 0 {
@@ -245,31 +260,155 @@ fn main() -> Result<(), slint::PlatformError> {
                             .into(),
                     );
                     ui.set_total(format!("Total used: {}", human(r.root.size)).into());
+                    let root = Arc::new(r.root);
                     update(&ui, |s| {
-                        s.root = Some(Rc::new(r.root));
+                        s.root = Some(root.clone());
                         s.path.clear();
+                        s.selected = None;
+                        s.hover = None;
                     });
+                    start_detect(&ui, root);
                 }
                 Err(e) => ui.set_status(format!("Scan failed: {e}").into()),
             }
         });
     });
+}
+
+/// Look for reclaimable space (needs the finished scan for project artifacts).
+fn start_detect(ui: &MainWindow, root: Arc<Node>) {
+    ui.set_clean_total("Analysing…".into());
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let items = cleanup::detect(&home_dir(), Some((Path::new("/"), &root)));
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            CLEAN.with(|c| {
+                let mut c = c.borrow_mut();
+                c.checked = vec![false; items.len()];
+                c.items = items;
+            });
+            refresh_clean(&ui, true);
+        });
+    });
+}
+
+fn clean_row(it: &CleanupItem, checked: bool) -> CleanItem {
+    let (risk, command) = (
+        match it.risk {
+            Risk::Safe => "safe",
+            Risk::Review => "review",
+            Risk::Careful => "careful",
+        },
+        match &it.method {
+            Method::Command(c) => c.clone(),
+            Method::Files => String::new(),
+        },
+    );
+    CleanItem {
+        title: it.title.clone().into(),
+        desc: it.description.clone().into(),
+        size: human(it.size).into(),
+        risk: risk.into(),
+        checked,
+        admin: matches!(it.method, Method::Command(_)),
+        command: command.into(),
+    }
+}
+
+/// Push the cleanup state to the UI. `rebuild` replaces all rows (resets scrolling).
+fn refresh_clean(ui: &MainWindow, rebuild: bool) {
+    CLEAN.with(|c| {
+        let c = c.borrow();
+        if rebuild {
+            let rows: Vec<CleanItem> = c.items.iter().zip(&c.checked).map(|(i, &k)| clean_row(i, k)).collect();
+            CLEAN_MODEL.with(|m| m.set_vec(rows));
+        }
+        let total: u64 = c.items.iter().map(|i| i.size).sum();
+        let direct: u64 = c.items.iter().filter(|i| matches!(i.method, Method::Files)).map(|i| i.size).sum();
+        let (count, sel) = c
+            .items
+            .iter()
+            .zip(&c.checked)
+            .filter(|(_, &k)| k)
+            .fold((0, 0u64), |(n, b), (i, _)| (n + 1, b + i.size));
+        ui.set_clean_total(format!("{} can be reclaimed · {} without admin rights", human(total), human(direct)).into());
+        ui.set_clean_count(count);
+        ui.set_clean_selected(format!("{count} selected · {}", human(sel)).into());
+        ui.set_clean_mode(if c.delete { "delete" } else { "trash" }.into());
+        ui.set_clean_busy(c.busy);
+    });
+}
+
+fn run_cleanup(ui: &MainWindow) {
+    let (picked, delete) = CLEAN.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.busy {
+            return (Vec::new(), c.delete);
+        }
+        let picked: Vec<CleanupItem> = c
+            .items
+            .iter()
+            .zip(&c.checked)
+            .filter(|(i, &k)| k && matches!(i.method, Method::Files))
+            .map(|(i, _)| i.clone())
+            .collect();
+        c.busy = !picked.is_empty();
+        (picked, c.delete)
+    });
+    if picked.is_empty() {
+        return;
+    }
+    ui.set_clean_msg("Cleaning…".into());
+    refresh_clean(ui, false);
+    let mode = if delete { Mode::Delete } else { Mode::Trash };
+    let weak = ui.as_weak();
+    std::thread::spawn(move || {
+        let home = home_dir();
+        let (mut freed, mut errors) = (0u64, Vec::new());
+        for it in &picked {
+            let out = cleanup::execute(&home, it, mode);
+            freed += out.freed;
+            errors.extend(out.errors);
+        }
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            CLEAN.with(|c| c.borrow_mut().busy = false);
+            let verb = if mode == Mode::Delete { "Freed" } else { "Moved to Trash:" };
+            let tail = if errors.is_empty() { String::new() } else { format!(" · {} items failed ({})", errors.len(), errors[0]) };
+            ui.set_clean_msg(format!("{verb} {}{tail}", human(freed)).into());
+            refresh_clean(&ui, false);
+            start_scan(&ui); // refresh chart and candidates
+        });
+    });
+}
+
+fn main() -> Result<(), slint::PlatformError> {
+    // Wayland app-id: lets GNOME match the window to orbit.desktop and its icon.
+    slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select()?;
+    slint::set_xdg_app_id("orbit")?;
+    let ui = MainWindow::new()?;
+    apply_theme(&ui, "auto");
+
+    CLEAN_MODEL.with(|m| ui.set_clean_items(ModelRc::from(m.clone())));
+    start_scan(&ui);
 
     // Live progress while scanning, plus follow-the-system theme changes (Auto).
     let tick = Timer::default();
     let weak = ui.as_weak();
     tick.start(TimerMode::Repeated, Duration::from_millis(250), move || {
         let Some(ui) = weak.upgrade() else { return };
-        let have_root = STATE.with(|s| s.borrow().root.is_some());
-        if !have_root {
-            ui.set_status(
-                format!(
-                    "Scanning… {} files · {}",
-                    progress.files.load(Ordering::Relaxed),
-                    human(progress.bytes.load(Ordering::Relaxed))
-                )
-                .into(),
-            );
+        if STATE.with(|s| s.borrow().scanning) {
+            if let Some(p) = PROGRESS.with(|p| p.borrow().clone()) {
+                ui.set_status(
+                    format!(
+                        "Scanning… {} files · {}",
+                        p.files.load(Ordering::Relaxed),
+                        human(p.bytes.load(Ordering::Relaxed))
+                    )
+                    .into(),
+                );
+            }
         } else if STATE.with(|s| s.borrow().last_dark) != ui.global::<Theme>().get_dark() {
             update(&ui, |_| {});
         }
@@ -400,6 +539,55 @@ fn main() -> Result<(), slint::PlatformError> {
                     STATE.with(|s| s.borrow_mut().hover = Some(p));
                     STATE.with(|s| render(&ui, &mut s.borrow_mut()));
                 }
+            }
+        }
+    });
+
+    ui.on_clean_toggle({
+        let weak = ui.as_weak();
+        move |i| {
+            let Some(ui) = weak.upgrade() else { return };
+            let i = i as usize;
+            CLEAN.with(|c| {
+                let mut c = c.borrow_mut();
+                if let Some(k) = c.checked.get_mut(i) {
+                    *k = !*k;
+                    let row = clean_row(&c.items[i], c.checked[i]);
+                    CLEAN_MODEL.with(|m| m.set_row_data(i, row));
+                }
+            });
+            refresh_clean(&ui, false);
+        }
+    });
+
+    ui.on_clean_set_mode({
+        let weak = ui.as_weak();
+        move |m| {
+            let Some(ui) = weak.upgrade() else { return };
+            CLEAN.with(|c| c.borrow_mut().delete = m == "delete");
+            refresh_clean(&ui, false);
+        }
+    });
+
+    ui.on_clean_select_safe({
+        let weak = ui.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            CLEAN.with(|c| {
+                let mut c = c.borrow_mut();
+                let flags: Vec<bool> =
+                    c.items.iter().map(|i| i.risk == Risk::Safe && matches!(i.method, Method::Files)).collect();
+                c.checked = flags;
+            });
+            refresh_clean(&ui, true);
+        }
+    });
+
+    ui.on_clean_run({
+        let weak = ui.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                run_cleanup(&ui);
             }
         }
     });
