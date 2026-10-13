@@ -1,6 +1,7 @@
 import { Palette, ListView } from "std-widgets.slint";
 
 export struct Item { name: string, size: string }
+export struct LargeItem { name: string, dir: string, size: string, age: string, can-trash: bool }
 export struct CleanItem { title: string, desc: string, size: string, risk: string, checked: bool, admin: bool, command: string }
 export { Palette, Theme }
 
@@ -73,6 +74,68 @@ component Btn inherits Rectangle {
     background: primary ? Theme.accent : Theme.segment-bg;
     t := Text { text: label; font-size: 12px; color: primary ? white : Theme.text; }
     TouchArea { enabled: root.enabled; clicked => { root.clicked(); } }
+}
+
+component LargePage inherits Rectangle {
+    in property <[LargeItem]> items;
+    in property <string> msg;
+    callback show(int);
+    callback trash(int);
+    background: Theme.panel-bg;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: "The biggest files on this disk"; font-size: 15px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: root.msg; font-size: 12px; color: Theme.text-dim; vertical-alignment: center; }
+        }
+        // Column headers share the row's fixed widths.
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 12px;
+            Text { text: "NAME"; font-size: 10px; color: Theme.text-dim; horizontal-stretch: 1; }
+            Text { text: "MODIFIED"; font-size: 10px; color: Theme.text-dim; width: 80px; }
+            Text { text: "SIZE"; font-size: 10px; color: Theme.text-dim; width: 84px; horizontal-alignment: right; }
+            Rectangle { width: 156px; }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for it[i] in root.items: Rectangle {
+                height: 52px;
+                border-radius: 8px;
+                background: ta.has-hover ? Theme.window-bg : transparent;
+                ta := TouchArea { }
+                HorizontalLayout {
+                    padding: 10px;
+                    spacing: 12px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        spacing: 2px;
+                        Text { text: it.name; font-size: 13px; font-weight: 600; color: Theme.text; overflow: elide; }
+                        Text { text: it.dir; font-size: 11px; color: Theme.text-dim; overflow: elide; }
+                    }
+                    Text { width: 80px; text: it.age; font-size: 12px; color: Theme.text-dim; vertical-alignment: center; }
+                    Text { width: 84px; text: it.size; font-size: 13px; font-weight: 600; color: Theme.text; horizontal-alignment: right; vertical-alignment: center; }
+                    Rectangle {
+                        width: 72px;
+                        Btn { label: "Show"; x: 0px; y: (parent.height - self.height) / 2; clicked => { root.show(i); } }
+                    }
+                    Rectangle {
+                        width: 72px;
+                        if it.can-trash: Btn { label: "Trash"; x: 0px; y: (parent.height - self.height) / 2; clicked => { root.trash(i); } }
+                    }
+                }
+            }
+        }
+    }
 }
 
 component CleanupPage inherits Rectangle {
@@ -242,6 +305,10 @@ export component MainWindow inherits Window {
     in property <bool> can-zoom: false;
     out property <length> chart-size: min(chart-area.width, chart-area.height);
     in property <[Item]> items;
+    in property <[LargeItem]> large-items;
+    in property <string> large-msg;
+    callback large-show(int);
+    callback large-trash(int);
     in property <[CleanItem]> clean-items;
     in property <string> clean-total: "Analysing…";
     in property <string> clean-selected;
@@ -308,12 +375,13 @@ export component MainWindow inherits Window {
             }
             Rectangle {
                 vertical-stretch: 1;
-                if root.page == "large": Rectangle {
-                background: Theme.panel-bg;
-                border-radius: 12px;
-                border-width: 1px;
-                border-color: Theme.border;
-                Text { text: "Coming next"; font-size: 14px; color: Theme.text-dim; }
+                if root.page == "large": LargePage {
+                width: parent.width;
+                height: parent.height;
+                items: root.large-items;
+                msg: root.large-msg;
+                show(i) => { root.large-show(i); }
+                trash(i) => { root.large-trash(i); }
             }
             if root.page == "cleanup": CleanupPage {
                 width: parent.width;

@@ -25,6 +25,8 @@ struct Clean {
 }
 
 thread_local! {
+    static LARGE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    static LARGE_MODEL: Rc<VecModel<LargeItem>> = Rc::new(VecModel::default());
     static CLEAN: RefCell<Clean> = RefCell::new(Clean::default());
     static CLEAN_MODEL: Rc<VecModel<CleanItem>> = Rc::new(VecModel::default());
     static PROGRESS: RefCell<Option<Arc<Progress>>> = const { RefCell::new(None) };
@@ -232,6 +234,51 @@ fn update(ui: &MainWindow, f: impl FnOnce(&mut State)) {
     });
 }
 
+const LARGE_LIMIT: usize = 150;
+
+fn collect_files(path: &mut PathBuf, node: &Node, out: &mut Vec<(PathBuf, u64)>) {
+    for c in &node.children {
+        path.push(&*c.name);
+        match c.kind {
+            NodeKind::File => out.push((path.clone(), c.size)),
+            NodeKind::Dir => collect_files(path, c, out),
+        }
+        path.pop();
+    }
+}
+
+fn age(path: &Path) -> String {
+    let Ok(m) = std::fs::symlink_metadata(path).and_then(|m| m.modified()) else { return "—".into() };
+    let days = m.elapsed().map_or(0, |d| d.as_secs() / 86_400);
+    match days {
+        0 => "today".into(),
+        1..=30 => format!("{days} d ago"),
+        31..=364 => format!("{} mo ago", days / 30),
+        _ => format!("{:.1} y ago", days as f64 / 365.0),
+    }
+}
+
+/// Rebuild the "Large files" list from a finished scan.
+fn refresh_large(ui: &MainWindow, root: &Node) {
+    let mut files = Vec::new();
+    collect_files(&mut PathBuf::from("/"), root, &mut files);
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.truncate(LARGE_LIMIT);
+    let home = home_dir();
+    let rows: Vec<LargeItem> = files
+        .iter()
+        .map(|(p, size)| LargeItem {
+            name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into(),
+            dir: p.parent().map(|d| d.display().to_string()).unwrap_or_default().into(),
+            size: human(*size).into(),
+            age: age(p).into(),
+            can_trash: p.starts_with(&home),
+        })
+        .collect();
+    LARGE.with(|l| *l.borrow_mut() = files.into_iter().map(|(p, _)| p).collect());
+    LARGE_MODEL.with(|m| m.set_vec(rows));
+}
+
 fn home_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()))
 }
@@ -267,6 +314,7 @@ fn start_scan(ui: &MainWindow) {
                         s.selected = None;
                         s.hover = None;
                     });
+                    refresh_large(&ui, &root);
                     start_detect(&ui, root);
                 }
                 Err(e) => ui.set_status(format!("Scan failed: {e}").into()),
@@ -399,6 +447,7 @@ fn main() -> Result<(), slint::PlatformError> {
     apply_theme(&ui, "auto");
 
     CLEAN_MODEL.with(|m| ui.set_clean_items(ModelRc::from(m.clone())));
+    LARGE_MODEL.with(|m| ui.set_large_items(ModelRc::from(m.clone())));
     start_scan(&ui);
 
     // Live progress while scanning, plus follow-the-system theme changes (Auto).
@@ -596,6 +645,42 @@ fn main() -> Result<(), slint::PlatformError> {
         move || {
             if let Some(ui) = weak.upgrade() {
                 run_cleanup(&ui);
+            }
+        }
+    });
+
+    ui.on_large_show(|i| {
+        if let Some(p) = LARGE.with(|l| l.borrow().get(i as usize).cloned()) {
+            if let Some(dir) = p.parent() {
+                let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+            }
+        }
+    });
+
+    ui.on_large_trash({
+        let weak = ui.as_weak();
+        move |i| {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some(p) = LARGE.with(|l| l.borrow().get(i as usize).cloned()) else { return };
+            let item = CleanupItem {
+                id: "large".into(),
+                title: String::new(),
+                description: String::new(),
+                risk: Risk::Review,
+                size: 0,
+                paths: vec![p.clone()],
+                method: Method::Files,
+            };
+            let out = cleanup::execute(&home_dir(), &item, Mode::Trash);
+            if out.errors.is_empty() {
+                ui.set_large_msg(format!("Moved {} to Trash", p.file_name().unwrap_or_default().to_string_lossy()).into());
+                LARGE_MODEL.with(|m| m.remove(i as usize));
+                LARGE.with(|l| {
+                    l.borrow_mut().remove(i as usize);
+                });
+                start_scan(&ui); // refresh chart and totals (the list is rebuilt after the scan)
+            } else {
+                ui.set_large_msg(out.errors[0].clone().into());
             }
         }
     });
