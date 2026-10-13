@@ -354,10 +354,9 @@ fn stop_progress_timer() {
     PROGRESS_TIMER.with(|t| t.stop());
 }
 
-/// Dev helper for the README: select `/usr` (no personal paths), save the window
-/// as a PNG and quit. Triggered by `ORBIT_SCREENSHOT=<file>`.
-fn screenshot(ui: &MainWindow, root: &Node, out: PathBuf) {
-    update(ui, |s| s.selected = root.children.iter().find(|c| &*c.name == "usr").map(|c| c as *const Node));
+/// Dev helper for the README: save the window (whole chart, nothing selected) as a
+/// PNG and quit. Triggered by `ORBIT_SCREENSHOT=<file>`.
+fn screenshot(ui: &MainWindow, out: PathBuf) {
     let weak = ui.as_weak();
     Timer::single_shot(Duration::from_millis(700), move || {
         let snap = weak.upgrade().map(|ui| ui.window().take_snapshot());
@@ -465,7 +464,7 @@ fn start_scan(ui: &MainWindow, admin: bool) {
                     });
                     refresh_large(&root);
                     if let Some(out) = std::env::var_os("ORBIT_SCREENSHOT") {
-                        screenshot(&ui, &root, out.into());
+                        screenshot(&ui, out.into());
                     }
                     start_detect(&ui, root);
                 }

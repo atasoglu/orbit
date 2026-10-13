@@ -16,8 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot-dark.png" width="49%" alt="Orbit, dark theme">
-  <img src="docs/screenshot-light.png" width="49%" alt="Orbit, light theme">
+  <img src="docs/screenshot-dark.png" width="85%" alt="Orbit">
 </p>
 
 ## Features
