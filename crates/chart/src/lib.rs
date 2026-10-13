@@ -26,7 +26,8 @@ impl Theme {
 /// One drawable arc. `ring` 0 is the root disc.
 #[derive(Clone, Copy, Debug)]
 pub struct Arc<'a> {
-    pub node: &'a Node,
+    /// `None` marks the aggregated "Other" remainder of the parent.
+    pub node: Option<&'a Node>,
     pub ring: usize,
     pub start: f32,
     pub end: f32,
@@ -43,7 +44,7 @@ pub struct Layout<'a> {
 impl<'a> Layout<'a> {
     /// `min_angle`: arcs narrower than this (radians) are merged away.
     pub fn new(root: &'a Node, min_angle: f32) -> Self {
-        let mut arcs = vec![Arc { node: root, ring: 0, start: 0.0, end: TAU, hue: 0.0 }];
+        let mut arcs = vec![Arc { node: Some(root), ring: 0, start: 0.0, end: TAU, hue: 0.0 }];
         let mut frontier = vec![0usize];
         let mut ring_ranges = [(0, 0); MAX_RINGS + 1];
         ring_ranges[0] = (0, 1);
@@ -52,23 +53,26 @@ impl<'a> Layout<'a> {
             let mut next = Vec::new();
             for &pi in &frontier {
                 let p = arcs[pi];
-                if p.node.size == 0 {
+                let Some(pn) = p.node else { continue };
+                if pn.size == 0 {
                     continue;
                 }
                 let span = p.end - p.start;
                 let mut a = p.start;
-                let n = p.node.children.len().max(1) as f32;
-                for (i, c) in p.node.children.iter().enumerate() {
-                    let w = span * c.size as f32 / p.node.size as f32;
+                for (i, c) in pn.children.iter().enumerate() {
+                    let w = span * c.size as f32 / pn.size as f32;
                     if w < min_angle {
                         break; // children are sorted by size, the rest is smaller
                     }
-                    let hue = if ring == 1 { (i as f32 / n.max(8.0)) * 0.9 } else { p.hue };
-                    arcs.push(Arc { node: c, ring, start: a, end: a + w, hue });
+                    let hue = if ring == 1 { (i as f32 * 0.618_034).fract() } else { p.hue };
+                    arcs.push(Arc { node: Some(c), ring, start: a, end: a + w, hue });
                     if !c.children.is_empty() {
                         next.push(arcs.len() - 1);
                     }
                     a += w;
+                }
+                if p.end - a >= min_angle {
+                    arcs.push(Arc { node: None, ring, start: a, end: p.end, hue: p.hue });
                 }
             }
             ring_ranges[ring] = (begin, arcs.len());
@@ -131,20 +135,24 @@ impl<'a> Layout<'a> {
         for (i, a) in self.arcs.iter().enumerate() {
             let (r0, r1) = self.radii(a.ring, radius);
             let Some(path) = sector(cx, cy, r0, r1, a.start, a.end) else { continue };
-            let (hue, sat, light) = if a.ring == 0 {
+            let (hue, sat, light) = if a.node.is_none() {
+                (0.0, 0.0, if theme.dark { 0.38 } else { 0.80 })
+            } else if a.ring == 0 {
                 (0.0, 0.0, if theme.dark { 0.30 } else { 0.90 })
             } else {
                 let d = a.ring as f32 - 1.0;
                 if theme.dark {
-                    (a.hue, 0.55, 0.42 + 0.04 * d)
+                    (a.hue, 0.42, 0.40 + 0.045 * d)
                 } else {
-                    (a.hue, 0.60, 0.58 + 0.05 * d)
+                    (a.hue, 0.55, 0.60 + 0.05 * d)
                 }
             };
             let boost = if highlight == Some(i) { 0.12 } else { 0.0 };
             paint.set_color(hsl(hue, sat, (light + boost).min(0.9)));
             pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
-            pixmap.stroke_path(&path, &gap, &stroke, Transform::identity(), None);
+            if (a.end - a.start) * r1 > 3.0 {
+                pixmap.stroke_path(&path, &gap, &stroke, Transform::identity(), None);
+            }
         }
     }
 }
@@ -153,7 +161,7 @@ impl<'a> Layout<'a> {
 fn sector(cx: f32, cy: f32, r0: f32, r1: f32, a0: f32, a1: f32) -> Option<tiny_skia::Path> {
     let off = -std::f32::consts::FRAC_PI_2;
     let (a0, a1) = (a0 + off, a1 + off);
-    let steps = (((a1 - a0) * r1) / 4.0).ceil().clamp(1.0, 256.0) as usize;
+    let steps = (((a1 - a0) * r1) / 6.0).ceil().clamp(1.0, 128.0) as usize;
     let mut pb = PathBuilder::new();
     if r0 <= 0.5 && a1 - a0 > TAU - 1e-3 {
         pb.push_circle(cx, cy, r1);
