@@ -1,4 +1,6 @@
-import { Palette } from "std-widgets.slint";
+import { Palette, ListView } from "std-widgets.slint";
+
+export struct Item { name: string, size: string }
 export { Palette, Theme }
 
 // Theme tokens. Auto = follow the system (Palette.color-scheme is the live value).
@@ -66,14 +68,13 @@ export component MainWindow inherits Window {
     in property <string> theme-mode: "auto";
     in-out property <string> page: "overview";
     in property <bool> has-selection: false;
-    in property <bool> anchor-visible: false;
-    in property <length> anchor-x;
-    in property <length> anchor-y;
     in property <string> sel-title: "HOVER";
     in property <bool> can-zoom: false;
-    out property <length> chart-w: chart-area.width;
-    out property <length> chart-h: chart-area.height;
     out property <length> chart-size: min(chart-area.width, chart-area.height);
+    in property <[Item]> items;
+    callback item-clicked(int);
+    callback item-hovered(int);
+    callback go-root();
     callback zoom-in();
     callback double-clicked(length, length);
 
@@ -179,7 +180,6 @@ export component MainWindow inherits Window {
                     VerticalLayout {
                         padding: 16px;
                         spacing: 6px;
-                        alignment: start;
                         Text { text: "PATH"; font-size: 10px; color: Theme.text-dim; }
                         Text { text: root.crumb; font-size: 12px; color: Theme.text; wrap: word-wrap; }
                         Rectangle { height: 8px; }
@@ -200,41 +200,40 @@ export component MainWindow inherits Window {
                             height: 30px;
                             border-radius: 8px;
                             background: Theme.segment-bg;
+                            Text { text: "⌂  Back to root"; font-size: 12px; color: Theme.text; }
+                            TouchArea { clicked => { root.go-root(); } }
+                        }
+                        Rectangle {
+                            height: 30px;
+                            border-radius: 8px;
+                            background: Theme.segment-bg;
                             Text { text: "↑  Up one level"; font-size: 12px; color: Theme.text; }
                             TouchArea { clicked => { root.go-up(); } }
+                        }
+                        Text { text: "CONTENTS"; font-size: 10px; color: Theme.text-dim; }
+                        ListView {
+                            vertical-stretch: 1;
+                            min-height: 40px;
+                            for item[i] in root.items: Rectangle {
+                                height: 26px;
+                                border-radius: 6px;
+                                background: row-ta.has-hover ? Theme.segment-bg : transparent;
+                                row-ta := TouchArea {
+                                    clicked => { root.item-clicked(i); }
+                                    changed has-hover => { if self.has-hover { root.item-hovered(i); } }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 6px;
+                                    Text { text: item.name; font-size: 12px; color: Theme.text; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                                    Text { text: item.size; font-size: 11px; color: Theme.text-dim; vertical-alignment: center; horizontal-alignment: right; }
+                                }
+                            }
                         }
                         Text { text: root.total; font-size: 11px; color: Theme.text-dim; }
                     }
                 }
-                }
-                // Leader line from the selected arc to the inspector.
-                if root.anchor-visible: Path {
-                    width: row.width;
-                    height: row.height;
-                    viewbox-width: self.width / 1px;
-                    viewbox-height: self.height / 1px;
-                    stroke: Theme.accent;
-                    stroke-width: 1.5px;
-                    fill: transparent;
-                    commands: "M \{root.anchor-x / 1px} \{root.anchor-y / 1px} C \{(root.anchor-x / 1px + row.width / 1px - 242) / 2} \{root.anchor-y / 1px} \{(root.anchor-x / 1px + row.width / 1px - 242) / 2} 110 \{row.width / 1px - 244} 110";
-                }
-                if root.anchor-visible: Path {
-                    width: row.width;
-                    height: row.height;
-                    viewbox-width: self.width / 1px;
-                    viewbox-height: self.height / 1px;
-                    fill: Theme.accent;
-                    commands: "M \{row.width / 1px - 242} 110 L \{row.width / 1px - 252} 105 L \{row.width / 1px - 252} 115 Z";
-                }
-                if root.anchor-visible: Rectangle {
-                    x: root.anchor-x - 4px;
-                    y: root.anchor-y - 4px;
-                    width: 8px;
-                    height: 8px;
-                    border-radius: 4px;
-                    background: Theme.accent;
-                    border-width: 2px;
-                    border-color: white;
                 }
             }
             }

@@ -7,6 +7,9 @@ use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 pub const MAX_RINGS: usize = 5;
 
+/// Extra pointer tolerance (px) around arcs when hit-testing.
+const HIT_SLACK_PX: f32 = 3.0;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     pub background: Color,
@@ -135,8 +138,19 @@ impl<'a> Layout<'a> {
             if dist >= r0 && dist < r1 {
                 let (s, e) = self.ring_ranges[r];
                 let slice = &self.arcs[s..e];
+                if r == 0 {
+                    return slice.first();
+                }
+                // Thin slivers are impossible to hit exactly, so allow a few
+                // pixels of slack and prefer the thinnest arc within reach.
+                let tol = HIT_SLACK_PX / dist.max(1.0);
                 let i = slice.partition_point(|a| a.end <= angle);
-                return slice.get(i).filter(|a| a.start <= angle);
+                let lo = i.saturating_sub(2);
+                let hi = (i + 3).min(slice.len());
+                return slice[lo..hi]
+                    .iter()
+                    .filter(|a| a.start - tol <= angle && angle <= a.end + tol)
+                    .min_by(|a, b| (a.end - a.start).total_cmp(&(b.end - b.start)));
             }
         }
         None
@@ -181,6 +195,18 @@ impl<'a> Layout<'a> {
             pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
             if (a.end - a.start) * r1 > 3.0 {
                 pixmap.stroke_path(&path, &gap, &stroke, Transform::identity(), None);
+            }
+        }
+
+        // Selection border, drawn last so neighbours never cover it.
+        if let Some(f) = focus {
+            let a = &self.arcs[f];
+            let (r0, r1) = self.radii(a.ring, radius);
+            if let Some(path) = sector(cx, cy, r0, r1, a.start, a.end) {
+                let mut border = Paint { anti_alias: true, ..Paint::default() };
+                border.set_color(if theme.dark { Color::from_rgba8(255, 255, 255, 255) } else { Color::from_rgba8(10, 132, 255, 255) });
+                let stroke = Stroke { width: 3.0, ..Stroke::default() };
+                pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
             }
         }
     }

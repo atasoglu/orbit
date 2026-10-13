@@ -8,12 +8,15 @@ use std::time::{Duration, Instant};
 use diskutil_chart::{Layout, Theme as ChartTheme, MAX_RINGS};
 use diskutil_core::{scan, Node, NodeKind, ScanOptions};
 use slint::language::ColorScheme;
-use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode};
+use slint::{ComponentHandle, ModelRc, VecModel, Image, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode};
 use tiny_skia::Pixmap;
 
 slint::include_modules!();
 
 thread_local! {
+    // Row -> node map for the inspector list (kept apart from STATE so row
+    // callbacks can read it while STATE is mutably borrowed).
+    static LIST: RefCell<Vec<*const Node>> = const { RefCell::new(Vec::new()) };
     // UI-thread-only state (Rc nodes are not Send).
     static STATE: RefCell<State> = RefCell::new(State::default());
 }
@@ -90,7 +93,7 @@ fn render(ui: &MainWindow, st: &mut State) {
     let dark = ui.global::<Theme>().get_dark();
     st.last_dark = dark;
     let Some(cur) = st.current() else { return };
-    let (px, sf) = chart_px(ui);
+    let (px, _) = chart_px(ui);
     let half = px as f32 / 2.0;
     let layout = Layout::new(cur, 1.5 / half);
     let theme = if dark { ChartTheme::dark() } else { ChartTheme::light() };
@@ -103,16 +106,6 @@ fn render(ui: &MainWindow, st: &mut State) {
     ui.set_chart(Image::from_rgba8_premultiplied(buf));
     ui.set_crumb(st.crumb().into());
 
-    // Leader-line anchor, in logical px relative to the chart panel.
-    match focus {
-        Some(i) => {
-            let (dx, dy) = layout.centroid(i, half - 2.0);
-            ui.set_anchor_x(ui.get_chart_w() / 2.0 + dx / sf);
-            ui.set_anchor_y(ui.get_chart_h() / 2.0 + dy / sf);
-            ui.set_anchor_visible(true);
-        }
-        None => ui.set_anchor_visible(false),
-    }
 }
 
 /// Fill the inspector from the selection, or the hovered node when nothing is selected.
@@ -128,16 +121,35 @@ fn refresh_info(ui: &MainWindow, st: &State) {
     let node = p.and_then(|p| find_node(cur, p, MAX_RINGS));
     ui.set_can_zoom(st.selected.is_some() && node.is_some_and(|n| n.kind == NodeKind::Dir && !n.children.is_empty()));
     let Some(n) = node else {
+        fill_list(ui, st, cur, None);
         ui.set_sel_name(SharedString::new());
         ui.set_sel_size(SharedString::new());
         ui.set_sel_share(SharedString::new());
         ui.set_sel_files(SharedString::new());
         return;
     };
+    fill_list(ui, st, cur, Some(n));
     ui.set_sel_name(n.name.to_string().into());
     ui.set_sel_size(human(n.size).into());
     ui.set_sel_share(format!("{:.1}% of {}", n.size as f64 * 100.0 / cur.size.max(1) as f64, cur.name).into());
     ui.set_sel_files(if n.kind == NodeKind::Dir { format!("{} files", n.file_count) } else { "File".into() }.into());
+}
+
+/// Contents list: children of the selected folder, or of the current root.
+fn fill_list(ui: &MainWindow, st: &State, cur: &Node, node: Option<&Node>) {
+    let base = match (st.selected, node) {
+        (Some(_), Some(n)) if n.kind == NodeKind::Dir => n,
+        _ => cur,
+    };
+    let ptrs: Vec<*const Node> = base.children.iter().take(200).map(|c| c as *const Node).collect();
+    let rows: Vec<Item> = base
+        .children
+        .iter()
+        .take(200)
+        .map(|c| Item { name: c.name.to_string().into(), size: human(c.size).into() })
+        .collect();
+    LIST.with(|l| *l.borrow_mut() = ptrs);
+    ui.set_items(ModelRc::new(VecModel::from(rows)));
 }
 
 fn find_node(from: &Node, target: *const Node, depth: usize) -> Option<&Node> {
@@ -348,6 +360,43 @@ fn main() -> Result<(), slint::PlatformError> {
         move || {
             if let Some(ui) = weak.upgrade() {
                 update(&ui, State::zoom_out);
+            }
+        }
+    });
+
+    ui.on_go_root({
+        let weak = ui.as_weak();
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                update(&ui, |s| {
+                    s.path.clear();
+                    s.selected = None;
+                    s.hover = None;
+                });
+            }
+        }
+    });
+
+    ui.on_item_clicked({
+        let weak = ui.as_weak();
+        move |i| {
+            let Some(ui) = weak.upgrade() else { return };
+            if let Some(p) = LIST.with(|l| l.borrow().get(i as usize).copied()) {
+                update(&ui, |s| s.selected = Some(p));
+            }
+        }
+    });
+
+    ui.on_item_hovered({
+        let weak = ui.as_weak();
+        move |i| {
+            let Some(ui) = weak.upgrade() else { return };
+            if let Some(p) = LIST.with(|l| l.borrow().get(i as usize).copied()) {
+                if STATE.with(|s| s.borrow().hover) != Some(p) {
+                    // Only the chart highlight changes; keep the list itself stable.
+                    STATE.with(|s| s.borrow_mut().hover = Some(p));
+                    STATE.with(|s| render(&ui, &mut s.borrow_mut()));
+                }
             }
         }
     });
