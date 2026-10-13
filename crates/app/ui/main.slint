@@ -53,11 +53,12 @@ component NavItem inherits Rectangle {
 component Pill inherits Rectangle {
     in property <string> label;
     in property <color> tint;
+    in property <length> w: 64px;
     height: 18px;
-    width: t.preferred-width + 14px;
+    width: w;
     border-radius: 9px;
     background: tint.with-alpha(0.18);
-    t := Text { text: label; font-size: 10px; font-weight: 600; color: tint; }
+    t := Text { text: label; font-size: 10px; font-weight: 600; color: tint; horizontal-alignment: center; vertical-alignment: center; }
 }
 
 component Btn inherits Rectangle {
@@ -119,7 +120,7 @@ component CleanupPage inherits Rectangle {
                     Rectangle {
                         width: 20px;
                         height: 20px;
-                        y: 4px;
+                        y: (parent.height - self.height) / 2;
                         border-radius: 6px;
                         background: it.checked ? Theme.accent : transparent;
                         border-width: it.checked ? 0px : 1.5px;
@@ -140,12 +141,23 @@ component CleanupPage inherits Rectangle {
                             wrap: word-wrap;
                         }
                     }
-                    VerticalLayout {
-                        alignment: start;
-                        spacing: 4px;
-                        Text { text: it.size; font-size: 13px; font-weight: 600; color: Theme.text; horizontal-alignment: right; }
-                        Pill { label: it.risk; tint: root.risk-color(it.risk); }
-                        if it.admin: Pill { label: "admin"; tint: #5e5ce6; }
+                    // Fixed-width columns so every row lines up exactly.
+                    Rectangle {
+                        width: 52px;
+                        if it.admin: Pill { w: 52px; label: "admin"; tint: #5e5ce6; y: (parent.height - self.height) / 2; }
+                    }
+                    Rectangle {
+                        width: 64px;
+                        Pill { w: 64px; label: it.risk; tint: root.risk-color(it.risk); y: (parent.height - self.height) / 2; }
+                    }
+                    Text {
+                        width: 84px;
+                        text: it.size;
+                        font-size: 13px;
+                        font-weight: 600;
+                        color: Theme.text;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
                     }
                 }
             }
