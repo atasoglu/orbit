@@ -262,9 +262,13 @@ fn age(path: &Path) -> String {
 fn refresh_large(root: &Node) {
     let mut files = Vec::new();
     collect_files(&mut PathBuf::from("/"), root, &mut files);
+    let home = home_dir();
+    // Trashed files still sit on disk; listing them would let a second "Trash"
+    // click delete them for good. The Cleanup page owns the Trash.
+    let trash = home.join(".local/share/Trash");
+    files.retain(|(p, _)| !p.starts_with(&trash));
     files.sort_by(|a, b| b.1.cmp(&a.1));
     files.truncate(LARGE_LIMIT);
-    let home = home_dir();
     let rows: Vec<LargeItem> = files
         .iter()
         .map(|(p, size)| LargeItem {
