@@ -27,6 +27,7 @@ struct Clean {
 thread_local! {
     static LARGE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
     static LARGE_MODEL: Rc<VecModel<LargeItem>> = Rc::new(VecModel::default());
+    static DISK_MODEL: Rc<VecModel<DiskItem>> = Rc::new(VecModel::default());
     static CLEAN: RefCell<Clean> = RefCell::new(Clean::default());
     static CLEAN_MODEL: Rc<VecModel<CleanItem>> = Rc::new(VecModel::default());
     static PROGRESS: RefCell<Option<Arc<Progress>>> = const { RefCell::new(None) };
@@ -599,6 +600,26 @@ fn run_cleanup(ui: &MainWindow) {
     });
 }
 
+fn refresh_disks() {
+    let rows: Vec<DiskItem> = diskutil_core::disks::disks()
+        .into_iter()
+        .map(|d| {
+            let pct = d.percent();
+            DiskItem {
+                device: d.device.into(),
+                mount: d.mount.display().to_string().into(),
+                fstype: d.fstype.into(),
+                used: human(d.used).into(),
+                free: human(d.free).into(),
+                total: human(d.total).into(),
+                percent: format!("{pct:.0}%").into(),
+                fraction: (pct / 100.0) as f32,
+            }
+        })
+        .collect();
+    DISK_MODEL.with(|m| m.set_vec(rows));
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // Wayland app-id: lets GNOME match the window to orbit.desktop and its icon.
     slint::BackendSelector::new().backend_name("winit".into()).renderer_name("software".into()).select()?;
@@ -609,6 +630,8 @@ fn main() -> Result<(), slint::PlatformError> {
 
     CLEAN_MODEL.with(|m| ui.set_clean_items(ModelRc::from(m.clone())));
     LARGE_MODEL.with(|m| ui.set_large_items(ModelRc::from(m.clone())));
+    DISK_MODEL.with(|m| ui.set_disk_items(ModelRc::from(m.clone())));
+    refresh_disks();
     ui.set_admin_available(admin_helper_trusted());
     start_scan(&ui, false);
 

@@ -48,9 +48,28 @@ fn cleanup() {
     eprintln!("\n{} items, {} reclaimable, {:.2}s", items.len(), human(total), t.elapsed().as_secs_f64());
 }
 
+/// `orbit-cli disks`: mounted disks with their usage.
+fn disks() {
+    println!("{:<22} {:<18} {:<8} {:>10} {:>10} {:>10} {:>6}", "DEVICE", "MOUNT", "TYPE", "SIZE", "USED", "FREE", "USE%");
+    for d in diskutil_core::disks::disks() {
+        println!(
+            "{:<22} {:<18} {:<8} {:>10} {:>10} {:>10} {:>5.1}%",
+            d.device,
+            d.mount.display(),
+            d.fstype,
+            human(d.total),
+            human(d.used),
+            human(d.free),
+            d.percent()
+        );
+    }
+}
+
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("cleanup") {
-        return cleanup();
+    match std::env::args().nth(1).as_deref() {
+        Some("cleanup") => return cleanup(),
+        Some("disks") => return disks(),
+        _ => {}
     }
     let mut args = std::env::args().skip(1);
     let path = PathBuf::from(args.next().unwrap_or_else(|| "/".into()));

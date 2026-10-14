@@ -2,6 +2,7 @@ import { Palette, ListView } from "std-widgets.slint";
 
 export struct Item { name: string, size: string }
 export struct LargeItem { name: string, dir: string, size: string, age: string, can-trash: bool }
+export struct DiskItem { device: string, mount: string, fstype: string, used: string, free: string, total: string, percent: string, fraction: float }
 export struct CleanItem { title: string, desc: string, size: string, risk: string, checked: bool, admin: bool, command: string }
 export { Palette, Theme }
 
@@ -132,6 +133,52 @@ component LargePage inherits Rectangle {
                         width: 72px;
                         if it.can-trash: Btn { label: "Trash"; x: 0px; y: (parent.height - self.height) / 2; clicked => { root.trash(i); } }
                     }
+                }
+            }
+        }
+    }
+}
+
+component DisksPage inherits Rectangle {
+    in property <[DiskItem]> items;
+    background: Theme.panel-bg;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    function bar-color(f: float) -> color {
+        f > 0.9 ? #ff453a : (f > 0.75 ? #ff9f0a : #30d158)
+    }
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        Text { text: "Disks in this system"; font-size: 15px; font-weight: 600; color: Theme.text; }
+        ListView {
+            vertical-stretch: 1;
+            for it in root.items: Rectangle {
+                height: 78px;
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: it.mount; font-size: 13px; font-weight: 600; color: Theme.text; overflow: elide; vertical-alignment: center; }
+                        Text { text: "\{it.device} · \{it.fstype}"; font-size: 11px; color: Theme.text-dim; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                        Text { text: it.percent; font-size: 13px; font-weight: 700; color: root.bar-color(it.fraction); vertical-alignment: center; }
+                    }
+                    Rectangle {
+                        height: 10px;
+                        border-radius: 5px;
+                        background: Theme.segment-bg;
+                        Rectangle {
+                            x: 0px;
+                            width: parent.width * it.fraction;
+                            border-radius: 5px;
+                            background: root.bar-color(it.fraction);
+                        }
+                    }
+                    Text { text: "\{it.used} used · \{it.free} free · \{it.total} total"; font-size: 11px; color: Theme.text-dim; }
                 }
             }
         }
@@ -312,6 +359,7 @@ export component MainWindow inherits Window {
     callback theme-changed();
     changed is-dark => { root.theme-changed(); }
     callback scan-admin();
+    in property <[DiskItem]> disk-items;
     in property <[LargeItem]> large-items;
     in property <string> large-msg;
     callback large-show(int);
@@ -350,6 +398,7 @@ export component MainWindow inherits Window {
                 Text { text: "Orbit"; font-size: 17px; font-weight: 700; color: Theme.text; }
                 Rectangle { height: 12px; }
                 NavItem { label: "Overview"; active: root.page == "overview"; clicked => { root.page = "overview"; } }
+                NavItem { label: "Disks"; active: root.page == "disks"; clicked => { root.page = "disks"; } }
                 NavItem { label: "Cleanup"; active: root.page == "cleanup"; clicked => { root.page = "cleanup"; } }
                 NavItem { label: "Large files"; active: root.page == "large"; clicked => { root.page = "large"; } }
                 Rectangle { vertical-stretch: 1; }
@@ -376,7 +425,7 @@ export component MainWindow inherits Window {
             spacing: 12px;
             HorizontalLayout {
                 spacing: 10px;
-                Text { text: root.page == "overview" ? "Overview" : (root.page == "cleanup" ? "Cleanup" : "Large files"); font-size: 22px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                Text { text: root.page == "overview" ? "Overview" : (root.page == "disks" ? "Disks" : (root.page == "cleanup" ? "Cleanup" : "Large files")); font-size: 22px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
                 Rectangle { horizontal-stretch: 1; }
                 Text { text: root.status; font-size: 12px; color: Theme.text-dim; vertical-alignment: center; }
                 if root.admin-available && !root.admin-scan && !root.scanning: Btn { label: "Scan as admin"; clicked => { root.scan-admin(); } }
@@ -390,6 +439,11 @@ export component MainWindow inherits Window {
                 msg: root.large-msg;
                 show(i) => { root.large-show(i); }
                 trash(i) => { root.large-trash(i); }
+            }
+            if root.page == "disks": DisksPage {
+                width: parent.width;
+                height: parent.height;
+                items: root.disk-items;
             }
             if root.page == "cleanup": CleanupPage {
                 width: parent.width;

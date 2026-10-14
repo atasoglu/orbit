@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "diskutil-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "diskutil-chart",
  "diskutil-core",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "diskutil-chart"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "diskutil-core",
  "tiny-skia 0.11.4",
@@ -794,14 +794,14 @@ dependencies = [
 
 [[package]]
 name = "diskutil-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "diskutil-core",
 ]
 
 [[package]]
 name = "diskutil-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "rayon",
@@ -2918,7 +2918,7 @@ dependencies = [
 
 [[package]]
 name = "orbit-scan-helper"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "diskutil-core",
  "libc",

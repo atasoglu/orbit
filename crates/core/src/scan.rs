@@ -98,7 +98,7 @@ pub fn real_mounts() -> HashSet<PathBuf> {
 }
 
 /// mountinfo escapes space, tab, newline and backslash as `\NNN` (octal).
-fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
